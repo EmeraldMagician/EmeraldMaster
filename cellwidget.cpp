@@ -11,7 +11,8 @@ CellWidget::CellWidget(int number, QWidget *parent)
 {
     setCursor(Qt::PointingHandCursor);
     setFocusPolicy(Qt::StrongFocus);
-    setMinimumSize(200, 150);
+    // Small enough that two tiles fit side by side on a phone screen.
+    setMinimumSize(160, 140);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setToolTip(tr("Mini app %1").arg(m_number));
     setStyleSheet(QStringLiteral(
@@ -68,11 +69,26 @@ void CellWidget::setContentWidget(QWidget *widget)
 
 void CellWidget::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton) {
+    if (event->button() == Qt::LeftButton)
         setFocus(Qt::MouseFocusReason);
+
+    // Ignored on purpose: the parent scroll area (and its touch scroller on
+    // Android) only sees the event if it propagates, which lets a finger drag
+    // start scrolling instead of opening the tile.
+    QFrame::mousePressEvent(event);
+}
+
+void CellWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    // Acting on release rather than press means a drag that scrolls the grid
+    // never counts as a click: a scrolling gesture consumes the move events
+    // and releases the button somewhere else.
+    if (event->button() == Qt::LeftButton
+        && rect().contains(event->position().toPoint())) {
         emit clicked(m_number);
     }
-    QFrame::mousePressEvent(event);
+
+    QFrame::mouseReleaseEvent(event);
 }
 
 void CellWidget::keyPressEvent(QKeyEvent *event)

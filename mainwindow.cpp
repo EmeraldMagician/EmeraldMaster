@@ -2,13 +2,21 @@
 #include "cellwidget.h"
 #include "./ui_mainwindow.h"
 
+#include <QEvent>
 #include <QShortcut>
 #include <QStyle>
 
+#ifdef Q_OS_ANDROID
+#include <QScroller>
+#endif
+
 namespace {
-// You can keep these two numbers in sync with the actual grid contents.
+// Maximum number of tiles per row. Narrower windows use fewer columns so the
+// grid still fits, e.g. two on a phone instead of a sideways scrollbar.
+constexpr int MaxGridColumns = 3;
+
+// Keep in sync with the actual grid contents.
 constexpr int CellCount = 10;
-constexpr int GridColumns = 3;
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -22,6 +30,14 @@ MainWindow::MainWindow(QWidget *parent)
     setupNavigation();
 
     ui->stackedWidget->setCurrentWidget(ui->gridPage);
+    ui->scrollArea->viewport()->installEventFilter(this);
+
+#ifdef Q_OS_ANDROID
+    // A finger has no hover and no wheel: let drags scroll the grid, and let
+    // taps fall through to the tiles.
+    QScroller::grabGesture(ui->scrollArea->viewport(),
+                           QScroller::LeftMouseButtonGesture);
+#endif
 }
 
 MainWindow::~MainWindow()
@@ -34,18 +50,53 @@ void MainWindow::populateGrid()
     for (int i = 0; i < CellCount; ++i) {
         auto *cell = new CellWidget(i + 1, ui->scrollAreaWidgetContents);
         connect(cell, &CellWidget::clicked, this, &MainWindow::openMiniApp);
-        ui->gridLayout->addWidget(cell, i / GridColumns, i % GridColumns);
         m_cells.append(cell);
     }
+}
+
+void MainWindow::layoutCells()
+{
+    if (m_cells.isEmpty())
+        return;
+
+    // Fit as many columns as the current viewport allows, never more than
+    // MaxGridColumns. On a desktop window this is MaxGridColumns.
+    const int minCellWidth = m_cells.first()->minimumWidth();
+    const QMargins margins = ui->gridLayout->contentsMargins();
+    const int spacing = ui->gridLayout->horizontalSpacing();
+    const int available = ui->scrollArea->viewport()->width()
+                          - margins.left() - margins.right();
+    const int columns = qBound(1, (available + spacing) / (minCellWidth + spacing),
+                               MaxGridColumns);
+    if (columns == m_columns)
+        return;
+    m_columns = columns;
+
+    // Clear the stretches of the previous arrangement first.
+    for (int column = 0; column < MaxGridColumns; ++column)
+        ui->gridLayout->setColumnStretch(column, 0);
+    for (int row = 0; row < m_cells.size(); ++row)
+        ui->gridLayout->setRowStretch(row, 0);
+
+    for (int i = 0; i < m_cells.size(); ++i)
+        ui->gridLayout->addWidget(m_cells.at(i), i / columns, i % columns);
 
     // Let the tiles share the whole viewport, so the grid only scrolls
     // once the window becomes smaller than the tiles' minimum sizes.
-    for (int column = 0; column < GridColumns; ++column)
+    for (int column = 0; column < columns; ++column)
         ui->gridLayout->setColumnStretch(column, 1);
 
-    const int rows = (CellCount + GridColumns - 1) / GridColumns;
+    const int rows = (m_cells.size() + columns - 1) / columns;
     for (int row = 0; row < rows; ++row)
         ui->gridLayout->setRowStretch(row, 1);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == ui->scrollArea->viewport() && event->type() == QEvent::Resize)
+        layoutCells();
+
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::setupNavigation()
@@ -53,9 +104,18 @@ void MainWindow::setupNavigation()
     connect(ui->backButton, &QPushButton::clicked, this, &MainWindow::showMenu);
 
     // Esc or Backspace also returns to the grid from anywhere in the window.
-    auto *shortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-    shortcut->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(shortcut, &QShortcut::activated, this, &MainWindow::showMenu);
+    auto *escapeShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    escapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(escapeShortcut, &QShortcut::activated, this, &MainWindow::showMenu);
+
+    // Android's back gesture/key is a navigation request rather than a close
+    // request (Qt 6.12 sends the app to the background if nobody handles it).
+    // It is only enabled while a mini app is open: on the grid page it stays
+    // unhandled, so a back press leaves the app the way Android users expect.
+    m_backShortcut = new QShortcut(QKeySequence(Qt::Key_Back), this);
+    m_backShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    m_backShortcut->setEnabled(false);
+    connect(m_backShortcut, &QShortcut::activated, this, &MainWindow::showMenu);
 }
 
 void MainWindow::openMiniApp(int number)
@@ -69,6 +129,7 @@ void MainWindow::openMiniApp(int number)
     ui->appTitleLabel->setText(tr("Mini app %1").arg(number));
 
     ui->stackedWidget->setCurrentWidget(ui->appPage);
+    m_backShortcut->setEnabled(true);
     setWindowTitle(tr("Emerald Master - %1").arg(number));
     ui->backButton->setFocus(Qt::OtherFocusReason);
     statusBar()->showMessage(tr("Press Esc or the Menu button to go back"));
@@ -80,6 +141,7 @@ void MainWindow::showMenu()
         return;
 
     ui->stackedWidget->setCurrentWidget(ui->gridPage);
+    m_backShortcut->setEnabled(false);
     setWindowTitle(tr("Emerald Master"));
     statusBar()->clearMessage();
 
