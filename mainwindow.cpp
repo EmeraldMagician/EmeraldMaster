@@ -104,16 +104,21 @@ void MainWindow::setupNavigation()
     connect(ui->backButton, &QPushButton::clicked, this, &MainWindow::showMenu);
 
     // Esc or Backspace also returns to the grid from anywhere in the window.
+    // Window-level context matters on touch devices: a tap does not
+    // necessarily leave any widget focused, and the widget that was tapped
+    // may already be hidden after switching pages.
     auto *escapeShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-    escapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    escapeShortcut->setContext(Qt::WindowShortcut);
     connect(escapeShortcut, &QShortcut::activated, this, &MainWindow::showMenu);
 
     // Android's back gesture/key is a navigation request rather than a close
     // request (Qt 6.12 sends the app to the background if nobody handles it).
     // It is only enabled while a mini app is open: on the grid page it stays
     // unhandled, so a back press leaves the app the way Android users expect.
+    // As above, use the window context so this works without keyboard focus,
+    // which is the normal state of a touch-driven interface.
     m_backShortcut = new QShortcut(QKeySequence(Qt::Key_Back), this);
-    m_backShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    m_backShortcut->setContext(Qt::WindowShortcut);
     m_backShortcut->setEnabled(false);
     connect(m_backShortcut, &QShortcut::activated, this, &MainWindow::showMenu);
 }
