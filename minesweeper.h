@@ -49,6 +49,7 @@ private:
     void finish(bool won);
     void updateButton(int index);
     void updateCounters();
+    bool askCustomGame();
 
     QComboBox *m_difficulty = nullptr;
     QLabel *m_minesLeft = nullptr;
@@ -71,6 +72,13 @@ private:
     int m_seconds = 0;
     bool m_firstClick = true;
     bool m_gameOver = false;
+
+    // Parameters of the last custom game, kept between sessions.
+    int m_customRows = 20;
+    int m_customColumns = 20;
+    int m_customMines = 80;
+    int m_previousDifficulty = 0;
+    bool m_ignoreNextActivation = false;
 
     // Best time per difficulty, in seconds; a missing key means "no record".
     QHash<int, int> m_bestTimes;

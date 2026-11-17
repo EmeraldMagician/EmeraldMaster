@@ -6,7 +6,12 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QEvent>
+#include <QEventLoop>
+#include <QFont>
+#include <QFormLayout>
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -20,6 +25,8 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
+#include <QSignalBlocker>
+#include <QSpinBox>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTimer>
@@ -40,12 +47,17 @@ struct Difficulty
     int mines;
 };
 
-// Classic presets.
+// Classic presets. The last entry is the deliberately huge Insane board; a
+// custom game is not part of this table and is described by the user.
 constexpr Difficulty kDifficulties[] = {
     {9, 9, 10},
     {16, 16, 40},
     {16, 30, 99},
+    {100, 100, 2000},
 };
+
+constexpr int kCustomDifficulty = 4;
+constexpr int kMaxCustomSize = 100;
 
 constexpr int kTileSize = 34;
 constexpr int kTileSpacing = 2;
@@ -343,10 +355,26 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_difficulty->addItem(tr("Beginner"), 0);
     m_difficulty->addItem(tr("Intermediate"), 1);
     m_difficulty->addItem(tr("Expert"), 2);
+    m_difficulty->addItem(tr("Insane"), 3);
+    m_difficulty->addItem(tr("Custom"), kCustomDifficulty);
     m_difficulty->view()->setItemDelegate(
         new BestTimeDelegate(m_difficulty->view()));
     connect(m_difficulty, &QComboBox::currentIndexChanged,
-            this, &Minesweeper::setDifficulty);
+            this, [this](int index) {
+                // A user choice emits both signals; the activated handler
+                // below only exists to reopen the prompt when the current
+                // Custom entry is picked again.
+                m_ignoreNextActivation = true;
+                setDifficulty(index);
+            });
+    connect(m_difficulty, &QComboBox::activated, this, [this](int index) {
+        if (m_ignoreNextActivation) {
+            m_ignoreNextActivation = false;
+            return;
+        }
+        if (index == kCustomDifficulty)
+            setDifficulty(index);
+    });
 
     m_flagMode = new QPushButton(tr("Flag: off"), this);
     m_flagMode->setCheckable(true);
@@ -402,7 +430,20 @@ Minesweeper::Minesweeper(QWidget *parent)
     connect(restart, &QPushButton::clicked, this, &Minesweeper::newGame);
 
     QSettings settings;
+    m_customRows = qBound(3, settings.value(QStringLiteral("custom/rows"), 20).toInt(),
+                          kMaxCustomSize);
+    m_customColumns = qBound(
+        3, settings.value(QStringLiteral("custom/columns"), 20).toInt(),
+        kMaxCustomSize);
+    const int maxCustomMines = qMax(0, m_customRows * m_customColumns - 9);
+    m_customMines = qBound(0,
+                           settings.value(QStringLiteral("custom/mines"), 80).toInt(),
+                           maxCustomMines);
+
     for (int i = 0; i < m_difficulty->count(); ++i) {
+        // Custom boards vary, so they never get a best-time record.
+        if (i == kCustomDifficulty)
+            continue;
         const QString key = bestTimeKey(i);
         if (!settings.contains(key))
             continue;
@@ -423,10 +464,18 @@ void Minesweeper::newGame()
     m_gameOver = false;
     m_flagMode->setChecked(false);
 
-    const Difficulty difficulty = kDifficulties[m_difficulty->currentIndex()];
-    m_rows = difficulty.rows;
-    m_columns = difficulty.columns;
-    m_mineCount = difficulty.mines;
+    const int index = m_difficulty->currentIndex();
+    if (index == kCustomDifficulty) {
+        m_rows = m_customRows;
+        m_columns = m_customColumns;
+        m_mineCount = m_customMines;
+    } else {
+        const Difficulty &difficulty =
+            kDifficulties[qBound(0, index, kCustomDifficulty - 1)];
+        m_rows = difficulty.rows;
+        m_columns = difficulty.columns;
+        m_mineCount = difficulty.mines;
+    }
 
     buildBoard();
     m_status->setText(tr("Click a tile to start. Right-click, or turn on Flag "
@@ -438,6 +487,11 @@ void Minesweeper::newGame()
 
 void Minesweeper::buildBoard()
 {
+    // Rebuilding a visible board makes QGridLayout relayout on every added
+    // tile. On the 100x100 Insane board that takes seconds, so keep the board
+    // hidden until the new grid is complete.
+    m_board->hide();
+
     while (m_boardLayout->count() > 0) {
         QLayoutItem *item = m_boardLayout->takeAt(0);
         delete item->widget();
@@ -482,6 +536,7 @@ void Minesweeper::buildBoard()
     m_board->adjustSize();
     for (int i = 0; i < m_cells.size(); ++i)
         updateButton(i);
+    m_board->show();
 }
 
 void Minesweeper::placeMines(int safeIndex)
@@ -688,21 +743,27 @@ void Minesweeper::finish(bool won)
         }
 
         const int difficulty = m_difficulty->currentIndex();
-        const bool newBest = !m_bestTimes.contains(difficulty)
-                             || m_seconds < m_bestTimes.value(difficulty);
-        if (newBest) {
-            m_bestTimes[difficulty] = m_seconds;
-            QSettings settings;
-            settings.setValue(bestTimeKey(difficulty), m_seconds);
-            m_difficulty->setItemData(difficulty, formatTime(m_seconds),
-                                      kBestTimeRole);
+        if (difficulty == kCustomDifficulty) {
             m_status->setText(
-                tr("You cleared the field in %1 - a new best time!")
-                    .arg(formatTime(m_seconds)));
+                tr("You cleared the field in %1.").arg(formatTime(m_seconds)));
         } else {
-            m_status->setText(tr("You cleared the field in %1. Best: %2.")
-                                  .arg(formatTime(m_seconds),
-                                       formatTime(m_bestTimes.value(difficulty))));
+            const bool newBest =
+                !m_bestTimes.contains(difficulty)
+                || m_seconds < m_bestTimes.value(difficulty);
+            if (newBest) {
+                m_bestTimes[difficulty] = m_seconds;
+                QSettings settings;
+                settings.setValue(bestTimeKey(difficulty), m_seconds);
+                m_difficulty->setItemData(difficulty, formatTime(m_seconds),
+                                          kBestTimeRole);
+                m_status->setText(
+                    tr("You cleared the field in %1 - a new best time!")
+                        .arg(formatTime(m_seconds)));
+            } else {
+                m_status->setText(tr("You cleared the field in %1. Best: %2.")
+                                      .arg(formatTime(m_seconds),
+                                           formatTime(m_bestTimes.value(difficulty))));
+            }
         }
         // Refresh the counters so the new record shows up next to the clock.
         updateCounters();
@@ -774,6 +835,12 @@ void Minesweeper::updateCounters()
     m_minesLeft->setText(tr("Mines: %1").arg(m_mineCount - m_flagCount));
     m_time->setText(tr("Time: %1").arg(formatTime(m_seconds)));
 
+    if (m_difficulty->currentIndex() == kCustomDifficulty) {
+        // Custom boards differ in size, so a time is not comparable.
+        m_bestTime->setText(tr("Best: -"));
+        return;
+    }
+
     const auto best = m_bestTimes.constFind(m_difficulty->currentIndex());
     m_bestTime->setText(best == m_bestTimes.cend()
                             ? tr("Best: -")
@@ -788,8 +855,126 @@ void Minesweeper::tick()
 
 void Minesweeper::setDifficulty(int index)
 {
-    Q_UNUSED(index);
+    // A custom game needs its parameters from the user first. Cancelling the
+    // dialog puts the previous difficulty back without starting a new game.
+    if (index == kCustomDifficulty && !askCustomGame()) {
+        const QSignalBlocker blocker(m_difficulty);
+        m_difficulty->setCurrentIndex(m_previousDifficulty);
+        return;
+    }
+
+    m_previousDifficulty = index;
     newGame();
+}
+
+bool Minesweeper::askCustomGame()
+{
+    // Keep the prompt inside the game window. A separate top-level dialog
+    // creates another Android surface, and closing it leaves Qt's
+    // accessibility surface count at zero, so the app's accessible tree
+    // disappears until it is restarted. A child widget avoids that entirely.
+    QWidget backdrop(this);
+    backdrop.setObjectName(QStringLiteral("customBackdrop"));
+    backdrop.setStyleSheet(
+        QStringLiteral("#customBackdrop { background-color: rgba(0, 0, 0, 120); }"));
+    backdrop.setGeometry(rect());
+    backdrop.show();
+
+    QDialog dialog(&backdrop);
+    // QDialog always turns itself into a window; clear that so it stays a
+    // plain child widget inside the existing Android surface.
+    dialog.setWindowFlags(Qt::Widget);
+    dialog.setAutoFillBackground(true);
+    dialog.setStyleSheet(QStringLiteral(
+        "QDialog { background-color: palette(window); border: 1px solid palette(mid); }"));
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(14, 14, 14, 12);
+    layout->setSpacing(10);
+
+    auto *title = new QLabel(tr("Custom game"), &dialog);
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    layout->addWidget(title);
+
+    auto *form = new QFormLayout;
+    auto *rows = new QSpinBox(&dialog);
+    rows->setRange(3, kMaxCustomSize);
+    rows->setValue(m_customRows);
+
+    auto *columns = new QSpinBox(&dialog);
+    columns->setRange(3, kMaxCustomSize);
+    columns->setValue(m_customColumns);
+
+    auto *mines = new QSpinBox(&dialog);
+    const auto updateMineLimit = [rows, columns, mines] {
+        // The first click always opens the eight tiles around it, so at least
+        // nine tiles stay free of mines.
+        const int maxMines = qMax(0, rows->value() * columns->value() - 9);
+        mines->setMaximum(maxMines);
+        mines->setValue(qMin(mines->value(), maxMines));
+    };
+    updateMineLimit();
+    mines->setValue(qMin(m_customMines, mines->maximum()));
+    connect(rows, &QSpinBox::valueChanged, &dialog,
+            [updateMineLimit] { updateMineLimit(); });
+    connect(columns, &QSpinBox::valueChanged, &dialog,
+            [updateMineLimit] { updateMineLimit(); });
+
+    form->addRow(tr("Rows:"), rows);
+    form->addRow(tr("Columns:"), columns);
+    form->addRow(tr("Mines:"), mines);
+    layout->addLayout(form);
+
+    auto *hint = new QLabel(
+        tr("Rows and columns can be up to %1. Mines are limited so the first "
+           "click always has a free area.")
+            .arg(kMaxCustomSize),
+        &dialog);
+    hint->setWordWrap(true);
+    hint->setMinimumWidth(260);
+    layout->addWidget(hint);
+
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    if (QPushButton *ok = buttons->button(QDialogButtonBox::Ok))
+        ok->setDefault(true);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    dialog.adjustSize();
+    dialog.move((backdrop.width() - dialog.width()) / 2,
+                (backdrop.height() - dialog.height()) / 2);
+
+    bool accepted = false;
+    QEventLoop loop;
+    connect(&dialog, &QDialog::accepted, &loop, [&accepted, &loop] {
+        accepted = true;
+        loop.quit();
+    });
+    connect(&dialog, &QDialog::rejected, &loop, &QEventLoop::quit);
+    dialog.show();
+    dialog.raise();
+#ifndef Q_OS_ANDROID
+    // Focusing a spin box on Android would pop up the on-screen keyboard.
+    rows->setFocus();
+#endif
+    loop.exec();
+
+    if (!accepted)
+        return false;
+
+    m_customRows = rows->value();
+    m_customColumns = columns->value();
+    m_customMines = mines->value();
+
+    QSettings settings;
+    settings.setValue(QStringLiteral("custom/rows"), m_customRows);
+    settings.setValue(QStringLiteral("custom/columns"), m_customColumns);
+    settings.setValue(QStringLiteral("custom/mines"), m_customMines);
+    return true;
 }
 
 void Minesweeper::toggleFlagMode(bool enabled)
