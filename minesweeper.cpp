@@ -3,9 +3,11 @@
 #include <QComboBox>
 #include <QEvent>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QScrollArea>
@@ -36,6 +38,89 @@ constexpr Difficulty kDifficulties[] = {
 
 constexpr int kTileSize = 34;
 constexpr int kTileSpacing = 2;
+
+bool isDarkTheme()
+{
+    return QGuiApplication::palette().color(QPalette::Window).lightness() < 128;
+}
+
+QColor numberColor(int number)
+{
+    static const QRgb lightColors[] = {
+        0x00000000,
+        0xff1976d2, // 1 blue
+        0xff388e3c, // 2 green
+        0xffd32f2f, // 3 red
+        0xff303f9f, // 4 dark blue
+        0xff8d6e63, // 5 brown
+        0xff00838f, // 6 teal
+        0xff424242, // 7 dark grey
+        0xff616161, // 8 grey
+    };
+    static const QRgb darkColors[] = {
+        0x00000000,
+        0xff64b5f6, // 1 blue
+        0xff81c784, // 2 green
+        0xffe57373, // 3 red
+        0xff7986cb, // 4 indigo
+        0xffa1887f, // 5 brown
+        0xff4dd0e1, // 6 cyan
+        0xffbdbdbd, // 7 light grey
+        0xff9e9e9e, // 8 grey
+    };
+
+    const int index = qBound(1, number, 8);
+    return QColor::fromRgb(isDarkTheme() ? darkColors[index] : lightColors[index]);
+}
+
+QColor warningColor()
+{
+    return isDarkTheme() ? QColor(QStringLiteral("#ffb74d"))
+                         : QColor(QStringLiteral("#e65100"));
+}
+
+// An unopened tile: raised, so it stands apart from the flat, opened cells.
+QString hiddenTileStyle(bool flagged)
+{
+    const QString border = flagged ? warningColor().name()
+                                   : QStringLiteral("palette(mid)");
+    const QString text = flagged ? warningColor().name()
+                                 : QStringLiteral("palette(button-text)");
+    QString style = QStringLiteral(
+        "QPushButton {"
+        "  background-color: palette(button);"
+        "  border: 1px solid %1;"
+        "  border-radius: 4px;"
+        "  color: %2;"
+        "  font-weight: bold;"
+        "}").arg(border, text);
+#ifndef Q_OS_ANDROID
+    style += QStringLiteral(
+        "QPushButton:hover { background-color: palette(light); }"
+        "QPushButton:pressed { background-color: palette(mid); }");
+#endif
+    return style;
+}
+
+// An opened tile: flat and blending into the board, with only a grid line.
+QString revealedTileStyle(const QString &textColor,
+                          const QString &background = QStringLiteral("palette(base)"))
+{
+    return QStringLiteral(
+        "QPushButton {"
+        "  background-color: %1;"
+        "  border: 1px solid palette(midlight);"
+        "  border-radius: 0px;"
+        "  color: %2;"
+        "  font-weight: bold;"
+        "}"
+        // Qt paints disabled buttons with the disabled palette, so spell the
+        // opened-tile colours out for that state too.
+        "QPushButton:disabled {"
+        "  background-color: %1;"
+        "  color: %2;"
+        "}").arg(background, textColor);
+}
 } // namespace
 
 Minesweeper::Minesweeper(QWidget *parent)
@@ -74,6 +159,9 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_scroll->setWidgetResizable(false);
     m_scroll->setAlignment(Qt::AlignCenter);
     m_board = new QWidget(m_scroll);
+    // Opened tiles blend into this background; unopened ones stay raised.
+    m_board->setAutoFillBackground(true);
+    m_board->setBackgroundRole(QPalette::Base);
     m_boardLayout = new QGridLayout(m_board);
     m_boardLayout->setSpacing(kTileSpacing);
     m_boardLayout->setContentsMargins(4, 4, 4, 4);
@@ -144,6 +232,10 @@ void Minesweeper::buildBoard()
                     this, [this, index] { onButtonClicked(index); });
             m_buttons[index] = button;
             m_boardLayout->addWidget(button, row, column);
+            // Children created after the board is already visible start out
+            // hidden. Without this, the layout's size hint is just the margins
+            // and the board collapses to a few pixels on New/difficulty change.
+            button->show();
         }
     }
 
@@ -328,49 +420,30 @@ void Minesweeper::updateButton(int index)
     if (cell.wrong) {
         button->setText(QStringLiteral("\u00d7"));
         button->setEnabled(false);
-        button->setStyleSheet(QStringLiteral("color: #d32f2f; font-weight: bold;"));
+        button->setStyleSheet(revealedTileStyle(warningColor().name(),
+                                                QStringLiteral("rgba(245, 124, 0, 60)")));
         return;
     }
 
     if (!cell.revealed) {
         button->setText(cell.flagged ? QStringLiteral("F") : QString());
         button->setEnabled(!m_gameOver || cell.flagged);
-        button->setStyleSheet(cell.flagged
-                                  ? QStringLiteral("color: #f57c00; font-weight: bold;")
-                                  : QString());
+        button->setStyleSheet(hiddenTileStyle(cell.flagged));
         return;
     }
 
     button->setEnabled(false);
     if (cell.mine) {
         button->setText(QStringLiteral("*"));
-        button->setStyleSheet(QStringLiteral("color: #d32f2f; font-weight: bold;"));
+        button->setStyleSheet(revealedTileStyle(numberColor(3).name(),
+                                                QStringLiteral("rgba(211, 47, 47, 60)")));
     } else if (cell.adjacent > 0) {
         button->setText(QString::number(cell.adjacent));
-        colorNumber(button, cell.adjacent);
+        button->setStyleSheet(revealedTileStyle(numberColor(cell.adjacent).name()));
     } else {
         button->setText(QString());
-        button->setStyleSheet(QString());
+        button->setStyleSheet(revealedTileStyle(QStringLiteral("palette(text)")));
     }
-}
-
-void Minesweeper::colorNumber(QPushButton *button, int number)
-{
-    static const char *colors[] = {
-        "",
-        "#1976d2", // 1 blue
-        "#388e3c", // 2 green
-        "#d32f2f", // 3 red
-        "#303f9f", // 4 dark blue
-        "#8d6e63", // 5 brown
-        "#00838f", // 6 teal
-        "#424242", // 7 dark grey
-        "#616161", // 8 grey
-    };
-
-    const int index = qBound(1, number, 8);
-    button->setStyleSheet(QStringLiteral("color: %1; font-weight: bold;")
-                              .arg(QLatin1String(colors[index])));
 }
 
 void Minesweeper::updateCounters()

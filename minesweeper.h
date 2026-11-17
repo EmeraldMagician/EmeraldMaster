@@ -47,7 +47,6 @@ private:
     void finish(bool won);
     void updateButton(int index);
     void updateCounters();
-    static void colorNumber(QPushButton *button, int number);
 
     QComboBox *m_difficulty = nullptr;
     QLabel *m_minesLeft = nullptr;
