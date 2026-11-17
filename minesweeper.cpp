@@ -15,7 +15,9 @@
 #include <QPalette>
 #include <QPushButton>
 #include <QRandomGenerator>
+#include <QScreen>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStyle>
 #include <QStyledItemDelegate>
@@ -183,6 +185,14 @@ QString bestTimeKey(int difficulty)
     return QStringLiteral("bestTimes/%1").arg(difficulty);
 }
 
+// The text that is appended to a difficulty while the drop-down is open.
+QString bestTimeSuffix(const QVariant &best)
+{
+    const QString time = best.toString();
+    return time.isEmpty() ? QStringLiteral("    no best time yet")
+                          : QStringLiteral("    best ") + time;
+}
+
 // "42 s" for a short game, "3:07" once it runs past a minute.
 QString formatTime(int seconds)
 {
@@ -226,9 +236,49 @@ public:
 private:
     static QString suffix(const QModelIndex &index)
     {
-        const QString best = index.data(kBestTimeRole).toString();
-        return best.isEmpty() ? QStringLiteral("    no best time yet")
-                              : QStringLiteral("    best ") + best;
+        return bestTimeSuffix(index.data(kBestTimeRole));
+    }
+};
+
+// QComboBox makes its popup exactly as wide as the closed combo, which would
+// elide the "best ..." part added by the delegate. Widen the popup after Qt
+// has shown it, keeping it inside the screen.
+class DifficultyComboBox : public QComboBox
+{
+public:
+    using QComboBox::QComboBox;
+
+    void showPopup() override
+    {
+        QComboBox::showPopup();
+
+        QWidget *popup = view()->window();
+        if (!popup || !popup->isVisible())
+            return;
+
+        int textWidth = 0;
+        const QFontMetrics metrics = view()->fontMetrics();
+        for (int i = 0; i < count(); ++i) {
+            const QString text = itemText(i)
+                                 + bestTimeSuffix(itemData(i, kBestTimeRole));
+            textWidth = qMax(textWidth, metrics.horizontalAdvance(text));
+        }
+        const int padding = view()->verticalScrollBar()->sizeHint().width()
+                            + 2 * view()->frameWidth() + 24;
+        if (textWidth + padding <= popup->width())
+            return;
+
+        QRect geometry = popup->geometry();
+        geometry.setWidth(textWidth + padding);
+        if (const QScreen *screen = this->screen()) {
+            const QRect available = screen->availableGeometry();
+            geometry.setWidth(qMin(geometry.width(), available.width()));
+            if (geometry.right() > available.right())
+                geometry.moveRight(available.right());
+            if (geometry.left() < available.left())
+                geometry.moveLeft(available.left());
+        }
+        popup->setGeometry(geometry);
     }
 };
 } // namespace
@@ -239,7 +289,7 @@ Minesweeper::Minesweeper(QWidget *parent)
     auto *layout = new QVBoxLayout(this);
 
     auto *controls = new QHBoxLayout;
-    m_difficulty = new QComboBox(this);
+    m_difficulty = new DifficultyComboBox(this);
     m_difficulty->addItem(tr("Beginner"), 0);
     m_difficulty->addItem(tr("Intermediate"), 1);
     m_difficulty->addItem(tr("Expert"), 2);
@@ -248,19 +298,28 @@ Minesweeper::Minesweeper(QWidget *parent)
     connect(m_difficulty, &QComboBox::currentIndexChanged,
             this, &Minesweeper::setDifficulty);
 
-    m_minesLeft = new QLabel(this);
-    m_time = new QLabel(this);
     m_flagMode = new QPushButton(tr("Flag: off"), this);
     m_flagMode->setCheckable(true);
     auto *restart = new QPushButton(tr("New"), this);
 
     controls->addWidget(m_difficulty);
-    controls->addWidget(m_minesLeft);
-    controls->addWidget(m_time);
     controls->addStretch(1);
     controls->addWidget(m_flagMode);
     controls->addWidget(restart);
     layout->addLayout(controls);
+
+    // Counters get their own row so the clock and the record stay readable on
+    // a phone, where the difficulty and buttons use the full width.
+    auto *counters = new QHBoxLayout;
+    counters->setSpacing(18);
+    m_minesLeft = new QLabel(this);
+    m_time = new QLabel(this);
+    m_bestTime = new QLabel(this);
+    counters->addWidget(m_minesLeft);
+    counters->addWidget(m_time);
+    counters->addWidget(m_bestTime);
+    counters->addStretch(1);
+    layout->addLayout(counters);
 
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
@@ -273,7 +332,8 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_board = new QWidget(m_scroll);
     // Opened tiles blend into this background; unopened ones stay raised.
     m_board->setAutoFillBackground(true);
-    m_board->setBackgroundRole(QPalette::Base);    m_boardLayout = new QGridLayout(m_board);
+    m_board->setBackgroundRole(QPalette::Base);
+    m_boardLayout = new QGridLayout(m_board);
     m_boardLayout->setSpacing(kTileSpacing);
     m_boardLayout->setContentsMargins(4, 4, 4, 4);
     m_scroll->setWidget(m_board);
@@ -594,6 +654,8 @@ void Minesweeper::finish(bool won)
                                   .arg(formatTime(m_seconds),
                                        formatTime(m_bestTimes.value(difficulty))));
         }
+        // Refresh the counters so the new record shows up next to the clock.
+        updateCounters();
     } else {
         for (int i = 0; i < m_cells.size(); ++i) {
             Cell &cell = m_cells[i];
@@ -660,7 +722,12 @@ void Minesweeper::updateButton(int index)
 void Minesweeper::updateCounters()
 {
     m_minesLeft->setText(tr("Mines: %1").arg(m_mineCount - m_flagCount));
-    m_time->setText(formatTime(m_seconds));
+    m_time->setText(tr("Time: %1").arg(formatTime(m_seconds)));
+
+    const auto best = m_bestTimes.constFind(m_difficulty->currentIndex());
+    m_bestTime->setText(best == m_bestTimes.cend()
+                            ? tr("Best: -")
+                            : tr("Best: %1").arg(formatTime(*best)));
 }
 
 void Minesweeper::tick()

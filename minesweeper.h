@@ -53,6 +53,7 @@ private:
     QComboBox *m_difficulty = nullptr;
     QLabel *m_minesLeft = nullptr;
     QLabel *m_time = nullptr;
+    QLabel *m_bestTime = nullptr;
     QLabel *m_status = nullptr;
     QPushButton *m_flagMode = nullptr;
     QScrollArea *m_scroll = nullptr;
