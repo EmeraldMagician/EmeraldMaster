@@ -2,6 +2,7 @@
 
 #include "appicons.h"
 
+#include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QComboBox>
@@ -185,12 +186,18 @@ QString bestTimeKey(int difficulty)
     return QStringLiteral("bestTimes/%1").arg(difficulty);
 }
 
-// The text that is appended to a difficulty while the drop-down is open.
+// Gap between the difficulty name and the best time in the open drop-down.
+// Both columns are drawn by BestTimeDelegate, so no padding is baked into the
+// strings and every best time starts at the same x position.
+constexpr int kBestTimeGap = 16;
+
+// The best-time column text shown after a difficulty while the drop-down is
+// open. Kept separate from the difficulty name so the two can be aligned.
 QString bestTimeSuffix(const QVariant &best)
 {
     const QString time = best.toString();
-    return time.isEmpty() ? QStringLiteral("    no best time yet")
-                          : QStringLiteral("    best ") + time;
+    return time.isEmpty() ? QStringLiteral("no best time yet")
+                          : QStringLiteral("best ") + time;
 }
 
 // "42 s" for a short game, "3:07" once it runs past a minute.
@@ -217,23 +224,61 @@ public:
     {
         QStyleOptionViewItem styled(option);
         initStyleOption(&styled, index);
-        styled.text += suffix(index);
 
+        // Let the style draw the background and the difficulty name, then add
+        // the best time in a second, fixed column. Drawing it separately is
+        // what keeps all the values below each other.
         QStyle *style = styled.widget ? styled.widget->style()
                                       : QApplication::style();
         style->drawControl(QStyle::CE_ItemViewItem, &styled, painter,
                            styled.widget);
+
+        const QRect textRect = style->subElementRect(
+            QStyle::SE_ItemViewItemText, &styled, styled.widget);
+        if (textRect.isEmpty())
+            return;
+
+        const int column = nameColumnWidth(index, styled.fontMetrics)
+                           + kBestTimeGap;
+        const QRect suffixRect = textRect.adjusted(column, 0, 0, 0);
+        if (suffixRect.width() <= 0)
+            return;
+
+        painter->save();
+        painter->setFont(styled.font);
+        painter->setPen(styled.palette.color(
+            styled.state & QStyle::State_Selected ? QPalette::HighlightedText
+                                                   : QPalette::Text));
+        painter->drawText(suffixRect, Qt::AlignLeft | Qt::AlignVCenter,
+                          suffix(index));
+        painter->restore();
     }
 
     QSize sizeHint(const QStyleOptionViewItem &option,
                    const QModelIndex &index) const override
     {
         QSize size = QStyledItemDelegate::sizeHint(option, index);
-        size.rwidth() += option.fontMetrics.horizontalAdvance(suffix(index));
+        size.rwidth() += kBestTimeGap
+                         + option.fontMetrics.horizontalAdvance(suffix(index));
         return size;
     }
 
 private:
+    // Width of the longest difficulty name, so the best times can all start
+    // after the same column.
+    static int nameColumnWidth(const QModelIndex &index,
+                               const QFontMetrics &metrics)
+    {
+        int width = 0;
+        if (const QAbstractItemModel *model = index.model()) {
+            for (int row = 0; row < model->rowCount(); ++row) {
+                width = qMax(width, metrics.horizontalAdvance(
+                    model->index(row, 0).data(Qt::DisplayRole).toString()));
+            }
+        }
+        return width;
+    }
+
     static QString suffix(const QModelIndex &index)
     {
         return bestTimeSuffix(index.data(kBestTimeRole));
@@ -256,13 +301,17 @@ public:
         if (!popup || !popup->isVisible())
             return;
 
-        int textWidth = 0;
+        int nameWidth = 0;
+        int suffixWidth = 0;
         const QFontMetrics metrics = view()->fontMetrics();
         for (int i = 0; i < count(); ++i) {
-            const QString text = itemText(i)
-                                 + bestTimeSuffix(itemData(i, kBestTimeRole));
-            textWidth = qMax(textWidth, metrics.horizontalAdvance(text));
+            nameWidth = qMax(nameWidth, metrics.horizontalAdvance(itemText(i)));
+            suffixWidth = qMax(
+                suffixWidth,
+                metrics.horizontalAdvance(
+                    bestTimeSuffix(itemData(i, kBestTimeRole))));
         }
+        const int textWidth = nameWidth + kBestTimeGap + suffixWidth;
         const int padding = view()->verticalScrollBar()->sizeHint().width()
                             + 2 * view()->frameWidth() + 24;
         if (textWidth + padding <= popup->width())
