@@ -129,13 +129,6 @@
            <number>8</number>
           </property>
           <item>
-           <widget class="QPushButton" name="backButton">
-            <property name="text">
-             <string>&amp;Menu</string>
-            </property>
-           </widget>
-          </item>
-          <item>
            <widget class="QLabel" name="appTitleLabel">
             <property name="text">
              <string>Mini app</string>

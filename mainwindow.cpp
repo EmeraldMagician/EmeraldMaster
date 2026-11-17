@@ -4,7 +4,6 @@
 
 #include <QEvent>
 #include <QShortcut>
-#include <QStyle>
 
 #ifdef Q_OS_ANDROID
 #include <QScroller>
@@ -24,7 +23,6 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-    ui->backButton->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
 
     populateGrid();
     setupNavigation();
@@ -101,9 +99,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
 void MainWindow::setupNavigation()
 {
-    connect(ui->backButton, &QPushButton::clicked, this, &MainWindow::showMenu);
-
-    // Esc or Backspace also returns to the grid from anywhere in the window.
+    // Esc returns to the grid from anywhere in the window (desktop keyboards).
     // Window-level context matters on touch devices: a tap does not
     // necessarily leave any widget focused, and the widget that was tapped
     // may already be hidden after switching pages.
@@ -136,8 +132,6 @@ void MainWindow::openMiniApp(int number)
     ui->stackedWidget->setCurrentWidget(ui->appPage);
     m_backShortcut->setEnabled(true);
     setWindowTitle(tr("Emerald Master - %1").arg(number));
-    ui->backButton->setFocus(Qt::OtherFocusReason);
-    statusBar()->showMessage(tr("Press Esc or the Menu button to go back"));
 }
 
 void MainWindow::showMenu()
@@ -148,11 +142,14 @@ void MainWindow::showMenu()
     ui->stackedWidget->setCurrentWidget(ui->gridPage);
     m_backShortcut->setEnabled(false);
     setWindowTitle(tr("Emerald Master"));
-    statusBar()->clearMessage();
 
-    // Give focus back to the tile that was opened, so keyboard users
-    // can keep navigating from where they left off.
+#ifndef Q_OS_ANDROID
+    // On desktop, give focus back to the tile that was opened so keyboard
+    // users can keep navigating from where they left off. Touch devices have
+    // no keyboard, and focusing tiles leaves another tile highlighted when
+    // the stacked widget shows the grid again.
     const int index = ui->appLabel->text().toInt() - 1;
     if (CellWidget *cell = m_cells.value(index))
         cell->setFocus(Qt::OtherFocusReason);
+#endif
 }

@@ -10,23 +10,35 @@ CellWidget::CellWidget(int number, QWidget *parent)
     , m_number(number)
 {
     setCursor(Qt::PointingHandCursor);
+#ifdef Q_OS_ANDROID
+    // No keyboard on a phone: keeping tiles out of the focus chain avoids a
+    // stray highlight on a different tile when the grid page is shown again.
+    setFocusPolicy(Qt::NoFocus);
+#else
     setFocusPolicy(Qt::StrongFocus);
+#endif
     // Small enough that two tiles fit side by side on a phone screen.
     setMinimumSize(160, 140);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setToolTip(tr("Mini app %1").arg(m_number));
-    setStyleSheet(QStringLiteral(
+    QString style = QStringLiteral(
         "CellWidget {"
         "  background-color: palette(base);"
         "  border: 1px solid palette(mid);"
         "  border-radius: 10px;"
-        "}"
+        "}");
+#ifndef Q_OS_ANDROID
+    // Touch screens have no real hover; synthesizing it can leave a phantom
+    // highlight behind after a tap.
+    style += QStringLiteral(
         "CellWidget:hover {"
         "  border: 2px solid palette(highlight);"
         "}"
         "CellWidget:focus {"
         "  border: 2px solid palette(highlight);"
-        "}"));
+        "}");
+#endif
+    setStyleSheet(style);
 
     m_numberLabel = new QLabel(QString::number(m_number), this);
     QFont numberFont = m_numberLabel->font();
@@ -69,7 +81,7 @@ void CellWidget::setContentWidget(QWidget *widget)
 
 void CellWidget::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton)
+    if (event->button() == Qt::LeftButton && focusPolicy() != Qt::NoFocus)
         setFocus(Qt::MouseFocusReason);
 
     // Ignored on purpose: the parent scroll area (and its touch scroller on
