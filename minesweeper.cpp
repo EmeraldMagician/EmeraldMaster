@@ -200,13 +200,14 @@ QString bestTimeSuffix(const QVariant &best)
                           : QStringLiteral("best ") + time;
 }
 
-// "42 s" for a short game, "3:07" once it runs past a minute.
+// Always hours:minutes:seconds. The fixed-width fields keep the best times in
+// the drop-down aligned in one column, with leading zeroes where needed.
 QString formatTime(int seconds)
 {
-    if (seconds < 60)
-        return QStringLiteral("%1 s").arg(seconds);
-    return QStringLiteral("%1:%2").arg(seconds / 60)
-           .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    return QStringLiteral("%1:%2:%3")
+        .arg(seconds / 3600)
+        .arg((seconds / 60) % 60, 2, 10, QLatin1Char('0'))
+        .arg(seconds % 60, 2, 10, QLatin1Char('0'));
 }
 
 // The combo itself stays as narrow as the difficulty name; the best time is
