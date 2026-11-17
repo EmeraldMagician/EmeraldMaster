@@ -4,6 +4,7 @@
 
 #include <QEvent>
 #include <QShortcut>
+#include <QStyle>
 
 #ifdef Q_OS_ANDROID
 #include <QScroller>
@@ -23,6 +24,14 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+
+#ifdef Q_OS_ANDROID
+    // Phones use the system Back gesture/key instead; an on-screen Menu
+    // button would be a second, unnecessary way to leave the mini app.
+    ui->backButton->hide();
+#else
+    ui->backButton->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
+#endif
 
     populateGrid();
     setupNavigation();
@@ -99,6 +108,10 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
 void MainWindow::setupNavigation()
 {
+#ifndef Q_OS_ANDROID
+    connect(ui->backButton, &QPushButton::clicked, this, &MainWindow::showMenu);
+#endif
+
     // Esc returns to the grid from anywhere in the window (desktop keyboards).
     // Window-level context matters on touch devices: a tap does not
     // necessarily leave any widget focused, and the widget that was tapped
