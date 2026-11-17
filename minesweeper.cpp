@@ -1,5 +1,9 @@
 #include "minesweeper.h"
 
+#include "appicons.h"
+
+#include <QAbstractItemView>
+#include <QApplication>
 #include <QComboBox>
 #include <QEvent>
 #include <QGridLayout>
@@ -7,10 +11,14 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPalette>
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QScrollArea>
+#include <QSettings>
+#include <QStyle>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -167,6 +175,62 @@ QString revealedTileStyle(const QString &textColor,
         "  color: %3;"
         "}").arg(bg, line, textColor);
 }
+
+constexpr int kBestTimeRole = Qt::UserRole + 1;
+
+QString bestTimeKey(int difficulty)
+{
+    return QStringLiteral("bestTimes/%1").arg(difficulty);
+}
+
+// "42 s" for a short game, "3:07" once it runs past a minute.
+QString formatTime(int seconds)
+{
+    if (seconds < 60)
+        return QStringLiteral("%1 s").arg(seconds);
+    return QStringLiteral("%1:%2").arg(seconds / 60)
+           .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+}
+
+// The combo itself stays as narrow as the difficulty name; the best time is
+// only added to the entries while the drop-down is open.
+class BestTimeDelegate : public QStyledItemDelegate
+{
+public:
+    explicit BestTimeDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem styled(option);
+        initStyleOption(&styled, index);
+        styled.text += suffix(index);
+
+        QStyle *style = styled.widget ? styled.widget->style()
+                                      : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &styled, painter,
+                           styled.widget);
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QSize size = QStyledItemDelegate::sizeHint(option, index);
+        size.rwidth() += option.fontMetrics.horizontalAdvance(suffix(index));
+        return size;
+    }
+
+private:
+    static QString suffix(const QModelIndex &index)
+    {
+        const QString best = index.data(kBestTimeRole).toString();
+        return best.isEmpty() ? QStringLiteral("    no best time yet")
+                              : QStringLiteral("    best ") + best;
+    }
+};
 } // namespace
 
 Minesweeper::Minesweeper(QWidget *parent)
@@ -179,6 +243,8 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_difficulty->addItem(tr("Beginner"), 0);
     m_difficulty->addItem(tr("Intermediate"), 1);
     m_difficulty->addItem(tr("Expert"), 2);
+    m_difficulty->view()->setItemDelegate(
+        new BestTimeDelegate(m_difficulty->view()));
     connect(m_difficulty, &QComboBox::currentIndexChanged,
             this, &Minesweeper::setDifficulty);
 
@@ -224,6 +290,16 @@ Minesweeper::Minesweeper(QWidget *parent)
 
     connect(m_flagMode, &QPushButton::toggled, this, &Minesweeper::toggleFlagMode);
     connect(restart, &QPushButton::clicked, this, &Minesweeper::newGame);
+
+    QSettings settings;
+    for (int i = 0; i < m_difficulty->count(); ++i) {
+        const QString key = bestTimeKey(i);
+        if (!settings.contains(key))
+            continue;
+        const int best = settings.value(key).toInt();
+        m_bestTimes.insert(i, best);
+        m_difficulty->setItemData(i, formatTime(best), kBestTimeRole);
+    }
 
     newGame();
 }
@@ -274,6 +350,7 @@ void Minesweeper::buildBoard()
             const int index = row * m_columns + column;
             auto *button = new QPushButton(m_board);
             button->setFixedSize(kTileSize, kTileSize);
+            button->setIconSize(QSize(22, 22));
             button->setProperty("index", index);
             button->installEventFilter(this);
 #ifdef Q_OS_ANDROID
@@ -499,7 +576,24 @@ void Minesweeper::finish(bool won)
                 updateButton(i);
             }
         }
-        m_status->setText(tr("You cleared the field in %1 s!").arg(m_seconds));
+
+        const int difficulty = m_difficulty->currentIndex();
+        const bool newBest = !m_bestTimes.contains(difficulty)
+                             || m_seconds < m_bestTimes.value(difficulty);
+        if (newBest) {
+            m_bestTimes[difficulty] = m_seconds;
+            QSettings settings;
+            settings.setValue(bestTimeKey(difficulty), m_seconds);
+            m_difficulty->setItemData(difficulty, formatTime(m_seconds),
+                                      kBestTimeRole);
+            m_status->setText(
+                tr("You cleared the field in %1 - a new best time!")
+                    .arg(formatTime(m_seconds)));
+        } else {
+            m_status->setText(tr("You cleared the field in %1. Best: %2.")
+                                  .arg(formatTime(m_seconds),
+                                       formatTime(m_bestTimes.value(difficulty))));
+        }
     } else {
         for (int i = 0; i < m_cells.size(); ++i) {
             Cell &cell = m_cells[i];
@@ -521,9 +615,11 @@ void Minesweeper::updateButton(int index)
     if (!button)
         return;
 
+    const bool dark = isDarkTheme();
     const Cell &cell = m_cells.at(index);
     if (cell.wrong) {
         button->setText(QStringLiteral("\u00d7"));
+        button->setIcon(QIcon());
         button->setEnabled(false);
         button->setStyleSheet(revealedTileStyle(warningColor().name(),
                                                 QStringLiteral("rgba(245, 124, 0, 60)"),
@@ -532,7 +628,8 @@ void Minesweeper::updateButton(int index)
     }
 
     if (!cell.revealed) {
-        button->setText(cell.flagged ? QStringLiteral("F") : QString());
+        button->setText(QString());
+        button->setIcon(cell.flagged ? AppIcons::flag(dark) : QIcon());
         button->setEnabled(!m_gameOver || cell.flagged);
         button->setStyleSheet(hiddenTileStyle(cell.flagged));
         return;
@@ -540,7 +637,8 @@ void Minesweeper::updateButton(int index)
 
     if (cell.mine) {
         button->setEnabled(false);
-        button->setText(QStringLiteral("*"));
+        button->setText(QString());
+        button->setIcon(AppIcons::mine(dark));
         button->setStyleSheet(revealedTileStyle(numberColor(3).name(),
                                                 QStringLiteral("rgba(211, 47, 47, 70)"),
                                                 numberColor(3).name()));
@@ -549,10 +647,12 @@ void Minesweeper::updateButton(int index)
         // widgets, and a click on the digit has to reach us to chord.
         button->setEnabled(true);
         button->setText(QString::number(cell.adjacent));
+        button->setIcon(QIcon());
         button->setStyleSheet(revealedTileStyle(numberColor(cell.adjacent).name()));
     } else {
         button->setEnabled(true);
         button->setText(QString());
+        button->setIcon(QIcon());
         button->setStyleSheet(revealedTileStyle(tilePalette().text.name()));
     }
 }
@@ -560,7 +660,7 @@ void Minesweeper::updateButton(int index)
 void Minesweeper::updateCounters()
 {
     m_minesLeft->setText(tr("Mines: %1").arg(m_mineCount - m_flagCount));
-    m_time->setText(tr("%1 s").arg(m_seconds));
+    m_time->setText(formatTime(m_seconds));
 }
 
 void Minesweeper::tick()

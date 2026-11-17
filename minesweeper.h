@@ -1,6 +1,7 @@
 #ifndef MINESWEEPER_H
 #define MINESWEEPER_H
 
+#include <QHash>
 #include <QVector>
 #include <QWidget>
 
@@ -69,6 +70,9 @@ private:
     int m_seconds = 0;
     bool m_firstClick = true;
     bool m_gameOver = false;
+
+    // Best time per difficulty, in seconds; a missing key means "no record".
+    QHash<int, int> m_bestTimes;
 };
 
 #endif // MINESWEEPER_H

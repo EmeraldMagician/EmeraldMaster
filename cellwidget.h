@@ -3,6 +3,7 @@
 
 #include <QFrame>
 
+class QIcon;
 class QLabel;
 class QVBoxLayout;
 
@@ -21,6 +22,12 @@ public:
     explicit CellWidget(int number, QWidget *parent = nullptr);
 
     int number() const { return m_number; }
+
+    /// Shows an icon instead of the big tile number (used by real mini apps).
+    void setIcon(const QIcon &icon);
+
+    /// Replaces the "Click me" hint and the tooltip with the app's name.
+    void setTitle(const QString &title);
 
     /// Replaces the placeholder content with the widget of a mini app.
     /// The tile takes ownership of @p widget.

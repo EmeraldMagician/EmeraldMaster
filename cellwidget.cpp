@@ -1,8 +1,10 @@
 #include "cellwidget.h"
 
+#include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QPixmap>
 #include <QVBoxLayout>
 
 CellWidget::CellWidget(int number, QWidget *parent)
@@ -55,6 +57,19 @@ CellWidget::CellWidget(int number, QWidget *parent)
     m_layout->setContentsMargins(8, 8, 8, 8);
     m_layout->addWidget(m_numberLabel, 1);
     m_layout->addWidget(m_hintLabel);
+}
+
+void CellWidget::setIcon(const QIcon &icon)
+{
+    const qreal ratio = devicePixelRatioF();
+    m_numberLabel->setPixmap(icon.pixmap(QSize(88, 88), ratio));
+    m_numberLabel->setText(QString());
+}
+
+void CellWidget::setTitle(const QString &title)
+{
+    m_hintLabel->setText(title);
+    setToolTip(title);
 }
 
 void CellWidget::setContentWidget(QWidget *widget)

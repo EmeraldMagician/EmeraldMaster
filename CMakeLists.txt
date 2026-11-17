@@ -19,6 +19,8 @@ set(PROJECT_SOURCES
         mainwindow.ui
         cellwidget.cpp
         cellwidget.h
+        appicons.cpp
+        appicons.h
         minesweeper.cpp
         minesweeper.h
 )

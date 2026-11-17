@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "appicons.h"
 #include "cellwidget.h"
 #include "minesweeper.h"
 #include "./ui_mainwindow.h"
@@ -57,6 +58,10 @@ void MainWindow::populateGrid()
 {
     for (int i = 0; i < CellCount; ++i) {
         auto *cell = new CellWidget(i + 1, ui->scrollAreaWidgetContents);
+        if (i == 0) {
+            cell->setIcon(AppIcons::minesweeper());
+            cell->setTitle(tr("Minesweeper"));
+        }
         connect(cell, &CellWidget::clicked, this, &MainWindow::openMiniApp);
         m_cells.append(cell);
     }
@@ -179,7 +184,7 @@ void MainWindow::openMiniApp(int number)
 
     ui->stackedWidget->setCurrentWidget(ui->appPage);
     m_backShortcut->setEnabled(true);
-    setWindowTitle(tr("Emerald Master - %1").arg(number));
+    setWindowTitle(tr("Emerald Master - %1").arg(ui->appTitleLabel->text()));
 }
 
 void MainWindow::showMenu()
