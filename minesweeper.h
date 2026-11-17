@@ -1,6 +1,7 @@
 #ifndef MINESWEEPER_H
 #define MINESWEEPER_H
 
+#include <QElapsedTimer>
 #include <QVector>
 #include <QWidget>
 
@@ -42,6 +43,7 @@ private:
     void buildBoard();
     void placeMines(int safeIndex);
     void reveal(int index);
+    void revealNeighbours(int index);
     void toggleFlag(int index);
     void checkWin();
     void finish(bool won);
@@ -68,6 +70,12 @@ private:
     int m_seconds = 0;
     bool m_firstClick = true;
     bool m_gameOver = false;
+
+    // Touch screens have no double-click event of their own: remember the last
+    // tap so a second tap on the same opened number can act as a chord.
+    QElapsedTimer m_lastClick;
+    int m_lastClickIndex = -1;
+    bool m_lastClickWasOpenedNumber = false;
 };
 
 #endif // MINESWEEPER_H

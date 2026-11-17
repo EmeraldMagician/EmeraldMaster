@@ -1,5 +1,6 @@
 #include "minesweeper.h"
 
+#include <QApplication>
 #include <QComboBox>
 #include <QEvent>
 #include <QGridLayout>
@@ -244,7 +245,9 @@ void Minesweeper::newGame()
 
     buildBoard();
     m_status->setText(tr("Click a tile to start. Right-click, or turn on Flag "
-                         "mode on a touch screen, to mark a mine."));
+                         "mode on a touch screen, to mark a mine. Double-click "
+                         "(double-tap on touch) a number with all its mines "
+                         "flagged to clear the rest around it."));
     updateCounters();
 }
 
@@ -351,6 +354,25 @@ void Minesweeper::onButtonClicked(int index)
         return;
     }
 
+    // A quick second tap on the same opened number means "clear its
+    // neighbours" (a chord). Desktop double-clicks normally arrive as a
+    // MouseButtonDblClick instead and are handled in eventFilter(); this path
+    // is what makes a double tap work on touch screens.
+    const bool repeated = m_lastClick.isValid()
+                          && m_lastClickIndex == index
+                          && m_lastClickWasOpenedNumber
+                          && m_lastClick.elapsed() <= QApplication::doubleClickInterval();
+    m_lastClickIndex = index;
+    m_lastClickWasOpenedNumber = m_cells.at(index).revealed
+                                 && !m_cells.at(index).mine
+                                 && m_cells.at(index).adjacent > 0;
+    m_lastClick.start();
+
+    if (repeated) {
+        revealNeighbours(index);
+        return;
+    }
+
     if (m_firstClick) {
         placeMines(index);
         m_firstClick = false;
@@ -402,6 +424,54 @@ void Minesweeper::reveal(int index)
     }
 
     checkWin();
+}
+
+void Minesweeper::revealNeighbours(int index)
+{
+    if (m_gameOver || index < 0 || index >= m_cells.size())
+        return;
+
+    // While Flag mode is on, taps mean "mark a mine", not "chord".
+    if (m_flagMode->isChecked())
+        return;
+
+    const Cell &cell = m_cells.at(index);
+    if (!cell.revealed || cell.mine || cell.adjacent == 0)
+        return;
+
+    // Classic chord: if the number of surrounding flags matches the digit,
+    // open every remaining neighbour. A wrongly placed flag therefore costs
+    // the game, exactly as in the original.
+    const int row = index / m_columns;
+    const int column = index % m_columns;
+    int flags = 0;
+    QVector<int> targets;
+    for (int dr = -1; dr <= 1; ++dr) {
+        for (int dc = -1; dc <= 1; ++dc) {
+            if (dr == 0 && dc == 0)
+                continue;
+            const int r = row + dr;
+            const int c = column + dc;
+            if (r < 0 || r >= m_rows || c < 0 || c >= m_columns)
+                continue;
+            const int neighbour = r * m_columns + c;
+            const Cell &next = m_cells.at(neighbour);
+            if (next.flagged) {
+                ++flags;
+            } else if (!next.revealed) {
+                targets.append(neighbour);
+            }
+        }
+    }
+
+    if (flags != cell.adjacent)
+        return;
+
+    for (int neighbour : targets) {
+        if (m_gameOver)
+            break;
+        reveal(neighbour);
+    }
 }
 
 void Minesweeper::toggleFlag(int index)
@@ -484,16 +554,20 @@ void Minesweeper::updateButton(int index)
         return;
     }
 
-    button->setEnabled(false);
     if (cell.mine) {
+        button->setEnabled(false);
         button->setText(QStringLiteral("*"));
         button->setStyleSheet(revealedTileStyle(numberColor(3).name(),
                                                 QStringLiteral("rgba(211, 47, 47, 70)"),
                                                 numberColor(3).name()));
     } else if (cell.adjacent > 0) {
+        // Opened numbers stay enabled: Qt does not deliver clicks to disabled
+        // widgets, and a double-click on the digit has to reach us.
+        button->setEnabled(true);
         button->setText(QString::number(cell.adjacent));
         button->setStyleSheet(revealedTileStyle(numberColor(cell.adjacent).name()));
     } else {
+        button->setEnabled(true);
         button->setText(QString());
         button->setStyleSheet(revealedTileStyle(tilePalette().text.name()));
     }
@@ -524,6 +598,19 @@ void Minesweeper::toggleFlagMode(bool enabled)
 
 bool Minesweeper::eventFilter(QObject *watched, QEvent *event)
 {
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() == Qt::LeftButton) {
+            if (auto *button = qobject_cast<QPushButton *>(watched)) {
+                const QVariant index = button->property("index");
+                if (index.isValid()) {
+                    revealNeighbours(index.toInt());
+                    return true;
+                }
+            }
+        }
+    }
+
     if (event->type() == QEvent::MouseButtonPress) {
         auto *mouse = static_cast<QMouseEvent *>(event);
         if (mouse->button() == Qt::RightButton) {
