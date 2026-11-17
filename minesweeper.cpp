@@ -79,47 +79,93 @@ QColor warningColor()
                          : QColor(QStringLiteral("#e65100"));
 }
 
-// An unopened tile: raised, so it stands apart from the flat, opened cells.
+// Explicit greys, not palette roles: on some styles (and on Android)
+// QPalette::Button and QPalette::Base differ by only a few levels, which made
+// opened and unopened tiles look identical.
+struct TilePalette
+{
+    QColor hidden;
+    QColor hiddenBorder;
+    QColor hiddenHover;
+    QColor hiddenPressed;
+    QColor flagged;
+    QColor open;
+    QColor openBorder;
+    QColor text;
+};
+
+TilePalette tilePalette()
+{
+    if (isDarkTheme()) {
+        return {QColor(QStringLiteral("#4a4a4a")),
+                QColor(QStringLiteral("#707070")),
+                QColor(QStringLiteral("#585858")),
+                QColor(QStringLiteral("#3c3c3c")),
+                QColor(QStringLiteral("#6b5424")),
+                QColor(QStringLiteral("#242424")),
+                QColor(QStringLiteral("#3c3c3c")),
+                QColor(QStringLiteral("#e0e0e0"))};
+    }
+    return {QColor(QStringLiteral("#c8c8c8")),
+            QColor(QStringLiteral("#8e8e8e")),
+            QColor(QStringLiteral("#d3d3d3")),
+            QColor(QStringLiteral("#b0b0b0")),
+            QColor(QStringLiteral("#ffd9a0")),
+            QColor(QStringLiteral("#f7f7f7")),
+            QColor(QStringLiteral("#bcbcbc")),
+            QColor(QStringLiteral("#1f1f1f"))};
+}
+
+// An unopened tile: raised medium grey, clearly darker than an opened cell.
 QString hiddenTileStyle(bool flagged)
 {
-    const QString border = flagged ? warningColor().name()
-                                   : QStringLiteral("palette(mid)");
-    const QString text = flagged ? warningColor().name()
-                                 : QStringLiteral("palette(button-text)");
+    const TilePalette palette = tilePalette();
+    const QString background = flagged ? palette.flagged.name() : palette.hidden.name();
+    const QString border = flagged ? warningColor().name() : palette.hiddenBorder.name();
+    const QString text = flagged ? warningColor().name() : palette.text.name();
     QString style = QStringLiteral(
         "QPushButton {"
-        "  background-color: palette(button);"
-        "  border: 1px solid %1;"
-        "  border-radius: 4px;"
-        "  color: %2;"
+        "  background-color: %1;"
+        "  border: 1px solid %2;"
+        "  border-radius: 3px;"
+        "  color: %3;"
         "  font-weight: bold;"
-        "}").arg(border, text);
+        "  padding: 0px;"
+        "}").arg(background, border, text);
 #ifndef Q_OS_ANDROID
     style += QStringLiteral(
-        "QPushButton:hover { background-color: palette(light); }"
-        "QPushButton:pressed { background-color: palette(mid); }");
+        "QPushButton:hover { background-color: %1; }"
+        "QPushButton:pressed { background-color: %2; }")
+                 .arg(palette.hiddenHover.name(), palette.hiddenPressed.name());
 #endif
     return style;
 }
 
-// An opened tile: flat and blending into the board, with only a grid line.
+// An opened tile: flat, light and blending into the board, with only a grid
+// line. `background`/`border` override the defaults for mines and wrong flags.
 QString revealedTileStyle(const QString &textColor,
-                          const QString &background = QStringLiteral("palette(base)"))
+                          const QString &background = QString(),
+                          const QString &border = QString())
 {
+    const TilePalette palette = tilePalette();
+    const QString bg = background.isEmpty() ? palette.open.name() : background;
+    const QString line = border.isEmpty() ? palette.openBorder.name() : border;
     return QStringLiteral(
         "QPushButton {"
         "  background-color: %1;"
-        "  border: 1px solid palette(midlight);"
+        "  border: 1px solid %2;"
         "  border-radius: 0px;"
-        "  color: %2;"
+        "  color: %3;"
         "  font-weight: bold;"
+        "  padding: 0px;"
         "}"
         // Qt paints disabled buttons with the disabled palette, so spell the
         // opened-tile colours out for that state too.
         "QPushButton:disabled {"
         "  background-color: %1;"
-        "  color: %2;"
-        "}").arg(background, textColor);
+        "  border: 1px solid %2;"
+        "  color: %3;"
+        "}").arg(bg, line, textColor);
 }
 } // namespace
 
@@ -161,8 +207,7 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_board = new QWidget(m_scroll);
     // Opened tiles blend into this background; unopened ones stay raised.
     m_board->setAutoFillBackground(true);
-    m_board->setBackgroundRole(QPalette::Base);
-    m_boardLayout = new QGridLayout(m_board);
+    m_board->setBackgroundRole(QPalette::Base);    m_boardLayout = new QGridLayout(m_board);
     m_boardLayout->setSpacing(kTileSpacing);
     m_boardLayout->setContentsMargins(4, 4, 4, 4);
     m_scroll->setWidget(m_board);
@@ -215,6 +260,12 @@ void Minesweeper::buildBoard()
     m_buttons.resize(m_rows * m_columns);
     m_cells.clear();
     m_cells.resize(m_rows * m_columns);
+
+    // Match the board to the opened-tile colour so a revealed area reads as
+    // one flat surface.
+    QPalette boardPalette = m_board->palette();
+    boardPalette.setColor(QPalette::Base, tilePalette().open);
+    m_board->setPalette(boardPalette);
 
     for (int row = 0; row < m_rows; ++row) {
         for (int column = 0; column < m_columns; ++column) {
@@ -421,7 +472,8 @@ void Minesweeper::updateButton(int index)
         button->setText(QStringLiteral("\u00d7"));
         button->setEnabled(false);
         button->setStyleSheet(revealedTileStyle(warningColor().name(),
-                                                QStringLiteral("rgba(245, 124, 0, 60)")));
+                                                QStringLiteral("rgba(245, 124, 0, 60)"),
+                                                warningColor().name()));
         return;
     }
 
@@ -436,13 +488,14 @@ void Minesweeper::updateButton(int index)
     if (cell.mine) {
         button->setText(QStringLiteral("*"));
         button->setStyleSheet(revealedTileStyle(numberColor(3).name(),
-                                                QStringLiteral("rgba(211, 47, 47, 60)")));
+                                                QStringLiteral("rgba(211, 47, 47, 70)"),
+                                                numberColor(3).name()));
     } else if (cell.adjacent > 0) {
         button->setText(QString::number(cell.adjacent));
         button->setStyleSheet(revealedTileStyle(numberColor(cell.adjacent).name()));
     } else {
         button->setText(QString());
-        button->setStyleSheet(revealedTileStyle(QStringLiteral("palette(text)")));
+        button->setStyleSheet(revealedTileStyle(tilePalette().text.name()));
     }
 }
 
