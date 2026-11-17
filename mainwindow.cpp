@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "cellwidget.h"
+#include "minesweeper.h"
 #include "./ui_mainwindow.h"
 
 #include <QEvent>
@@ -132,15 +133,49 @@ void MainWindow::setupNavigation()
     connect(m_backShortcut, &QShortcut::activated, this, &MainWindow::showMenu);
 }
 
+void MainWindow::showAppWidget(QWidget *widget)
+{
+    if (m_activeApp == widget)
+        return;
+
+    if (m_activeApp) {
+        ui->appContentLayout->removeWidget(m_activeApp);
+        m_activeApp->hide();
+    }
+
+    m_activeApp = widget;
+    if (m_activeApp) {
+        ui->appLabel->hide();
+        m_activeApp->setParent(ui->appContent);
+        ui->appContentLayout->addWidget(m_activeApp);
+        m_activeApp->show();
+    } else {
+        ui->appLabel->show();
+    }
+}
+
 void MainWindow::openMiniApp(int number)
 {
     if (number < 1 || number > m_cells.size())
         return;
 
-    // This is where a real mini app would take over the page: replace
-    // appLabel with the app's own widget once it exists.
+    // Keep the number up to date even when a real app covers it, because
+    // showMenu() uses it to restore focus to the tile that was opened.
     ui->appLabel->setText(QString::number(number));
-    ui->appTitleLabel->setText(tr("Mini app %1").arg(number));
+
+    switch (number) {
+    case 1:
+        if (!m_minesweeper)
+            m_minesweeper = new Minesweeper(ui->appContent);
+        showAppWidget(m_minesweeper);
+        ui->appTitleLabel->setText(tr("Minesweeper"));
+        break;
+    default:
+        // Placeholder for the mini apps that are not written yet.
+        showAppWidget(nullptr);
+        ui->appTitleLabel->setText(tr("Mini app %1").arg(number));
+        break;
+    }
 
     ui->stackedWidget->setCurrentWidget(ui->appPage);
     m_backShortcut->setEnabled(true);
