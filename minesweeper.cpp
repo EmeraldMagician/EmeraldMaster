@@ -1,6 +1,5 @@
 #include "minesweeper.h"
 
-#include <QApplication>
 #include <QComboBox>
 #include <QEvent>
 #include <QGridLayout>
@@ -245,9 +244,9 @@ void Minesweeper::newGame()
 
     buildBoard();
     m_status->setText(tr("Click a tile to start. Right-click, or turn on Flag "
-                         "mode on a touch screen, to mark a mine. Double-click "
-                         "(double-tap on touch) a number with all its mines "
-                         "flagged to clear the rest around it."));
+                         "mode on a touch screen, to mark a mine. Click a "
+                         "number with all its mines flagged to clear the rest "
+                         "around it."));
     updateCounters();
 }
 
@@ -346,7 +345,7 @@ void Minesweeper::placeMines(int safeIndex)
 
 void Minesweeper::onButtonClicked(int index)
 {
-    if (m_gameOver)
+    if (m_gameOver || index < 0 || index >= m_cells.size())
         return;
 
     if (m_flagMode->isChecked()) {
@@ -354,21 +353,10 @@ void Minesweeper::onButtonClicked(int index)
         return;
     }
 
-    // A quick second tap on the same opened number means "clear its
-    // neighbours" (a chord). Desktop double-clicks normally arrive as a
-    // MouseButtonDblClick instead and are handled in eventFilter(); this path
-    // is what makes a double tap work on touch screens.
-    const bool repeated = m_lastClick.isValid()
-                          && m_lastClickIndex == index
-                          && m_lastClickWasOpenedNumber
-                          && m_lastClick.elapsed() <= QApplication::doubleClickInterval();
-    m_lastClickIndex = index;
-    m_lastClickWasOpenedNumber = m_cells.at(index).revealed
-                                 && !m_cells.at(index).mine
-                                 && m_cells.at(index).adjacent > 0;
-    m_lastClick.start();
-
-    if (repeated) {
+    // A regular click on an opened number clears the tiles around it (a chord)
+    // when the flags there match the digit, as in the classic game.
+    const Cell &cell = m_cells.at(index);
+    if (cell.revealed && !cell.mine && cell.adjacent > 0) {
         revealNeighbours(index);
         return;
     }
@@ -429,10 +417,6 @@ void Minesweeper::reveal(int index)
 void Minesweeper::revealNeighbours(int index)
 {
     if (m_gameOver || index < 0 || index >= m_cells.size())
-        return;
-
-    // While Flag mode is on, taps mean "mark a mine", not "chord".
-    if (m_flagMode->isChecked())
         return;
 
     const Cell &cell = m_cells.at(index);
@@ -562,7 +546,7 @@ void Minesweeper::updateButton(int index)
                                                 numberColor(3).name()));
     } else if (cell.adjacent > 0) {
         // Opened numbers stay enabled: Qt does not deliver clicks to disabled
-        // widgets, and a double-click on the digit has to reach us.
+        // widgets, and a click on the digit has to reach us to chord.
         button->setEnabled(true);
         button->setText(QString::number(cell.adjacent));
         button->setStyleSheet(revealedTileStyle(numberColor(cell.adjacent).name()));
@@ -598,19 +582,6 @@ void Minesweeper::toggleFlagMode(bool enabled)
 
 bool Minesweeper::eventFilter(QObject *watched, QEvent *event)
 {
-    if (event->type() == QEvent::MouseButtonDblClick) {
-        auto *mouse = static_cast<QMouseEvent *>(event);
-        if (mouse->button() == Qt::LeftButton) {
-            if (auto *button = qobject_cast<QPushButton *>(watched)) {
-                const QVariant index = button->property("index");
-                if (index.isValid()) {
-                    revealNeighbours(index.toInt());
-                    return true;
-                }
-            }
-        }
-    }
-
     if (event->type() == QEvent::MouseButtonPress) {
         auto *mouse = static_cast<QMouseEvent *>(event);
         if (mouse->button() == Qt::RightButton) {
