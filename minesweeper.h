@@ -2,6 +2,7 @@
 #define MINESWEEPER_H
 
 #include <QHash>
+#include <QString>
 #include <QVector>
 #include <QWidget>
 
@@ -50,6 +51,16 @@ private:
     void updateButton(int index);
     void updateCounters();
     bool askCustomGame();
+    void setStatus(const QString &text);
+
+    void setTileSize(int size);
+    void zoomTo(int level);
+    void zoomIn();
+    void zoomOut();
+    void resetZoom();
+    void fitBoard();
+    void applyTileMetrics(QPushButton *button) const;
+    void updateZoomLabel();
 
     QComboBox *m_difficulty = nullptr;
     QLabel *m_minesLeft = nullptr;
@@ -57,6 +68,10 @@ private:
     QLabel *m_bestTime = nullptr;
     QLabel *m_status = nullptr;
     QPushButton *m_flagMode = nullptr;
+    QPushButton *m_zoomOut = nullptr;
+    QPushButton *m_zoomReset = nullptr;
+    QPushButton *m_zoomIn = nullptr;
+    QPushButton *m_fit = nullptr;
     QScrollArea *m_scroll = nullptr;
     QWidget *m_board = nullptr;
     QGridLayout *m_boardLayout = nullptr;
@@ -70,6 +85,7 @@ private:
     int m_mineCount = 10;
     int m_flagCount = 0;
     int m_seconds = 0;
+    int m_tileSize = 32;
     bool m_firstClick = true;
     bool m_gameOver = false;
 

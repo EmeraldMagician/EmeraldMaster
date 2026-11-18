@@ -59,8 +59,24 @@ constexpr Difficulty kDifficulties[] = {
 constexpr int kCustomDifficulty = 4;
 constexpr int kMaxCustomSize = 100;
 
-constexpr int kTileSize = 34;
-constexpr int kTileSpacing = 2;
+// Zoom levels. The default is a middle level, so there is room to go both
+// smaller (useful for the 100x100 Insane board) and larger (for small boards
+// on a high-density screen).
+constexpr int kDefaultTileSize = 32;
+constexpr int kMinTileSize = 16;
+constexpr int kMaxTileSize = 64;
+constexpr int kTileSizes[] = {16, 20, 24, 32, 40, 48, 64};
+constexpr int kTileSizeCount = int(sizeof(kTileSizes) / sizeof(kTileSizes[0]));
+
+int tileSpacingFor(int tileSize)
+{
+    return qMax(1, tileSize / 16);
+}
+
+int boardMarginFor(int tileSize)
+{
+    return qMax(2, tileSize / 8);
+}
 
 bool isDarkTheme()
 {
@@ -412,14 +428,65 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_board->setAutoFillBackground(true);
     m_board->setBackgroundRole(QPalette::Base);
     m_boardLayout = new QGridLayout(m_board);
-    m_boardLayout->setSpacing(kTileSpacing);
-    m_boardLayout->setContentsMargins(4, 4, 4, 4);
+    m_boardLayout->setSpacing(tileSpacingFor(kDefaultTileSize));
+    m_boardLayout->setContentsMargins(boardMarginFor(kDefaultTileSize),
+                                      boardMarginFor(kDefaultTileSize),
+                                      boardMarginFor(kDefaultTileSize),
+                                      boardMarginFor(kDefaultTileSize));
     m_scroll->setWidget(m_board);
     layout->addWidget(m_scroll, 1);
 
+    // Scaling is done with explicit controls rather than pinch-to-zoom: the
+    // touch scroller already owns the finger for panning, and a two-finger
+    // gesture on top of that would make both behaviours unreliable.
+    auto *zoomRow = new QHBoxLayout;
+    zoomRow->setSpacing(6);
+    m_zoomOut = new QPushButton(QStringLiteral("\u2212"), this);
+    m_zoomReset = new QPushButton(this);
+    m_zoomIn = new QPushButton(QStringLiteral("+"), this);
+    m_fit = new QPushButton(tr("Fit"), this);
+    m_zoomOut->setFixedWidth(34);
+    m_zoomIn->setFixedWidth(34);
+    m_zoomReset->setMinimumWidth(58);
+    for (QPushButton *button : {m_zoomOut, m_zoomReset, m_zoomIn, m_fit})
+        button->setFixedHeight(28);
+    m_zoomOut->setToolTip(tr("Zoom out"));
+    m_zoomIn->setToolTip(tr("Zoom in"));
+    m_zoomReset->setToolTip(tr("Reset zoom to 100%"));
+    m_fit->setToolTip(tr("Fit the whole board on screen"));
+    m_zoomOut->setAutoRepeat(true);
+    m_zoomIn->setAutoRepeat(true);
+    connect(m_zoomOut, &QPushButton::clicked, this, &Minesweeper::zoomOut);
+    connect(m_zoomIn, &QPushButton::clicked, this, &Minesweeper::zoomIn);
+    connect(m_zoomReset, &QPushButton::clicked, this, &Minesweeper::resetZoom);
+    connect(m_fit, &QPushButton::clicked, this, &Minesweeper::fitBoard);
+    zoomRow->addWidget(m_zoomOut);
+    zoomRow->addWidget(m_zoomReset);
+    zoomRow->addWidget(m_zoomIn);
+    zoomRow->addWidget(m_fit);
+    zoomRow->addStretch(1);
+    layout->addLayout(zoomRow);
+
 #ifdef Q_OS_ANDROID
-    // Expert is wider than a phone screen: let a finger drag pan the board.
+    // Expert and Insane are larger than a phone screen: let a finger drag pan
+    // the board. A flick used to keep gliding after the finger lifted, which
+    // made a big board shoot away from the area being inspected. Keep the
+    // direct drag (the board stays under the finger) but stop the kinetic
+    // phase as soon as it starts, and disable the rubber-band overshoot.
     QScroller::grabGesture(m_scroll->viewport(), QScroller::LeftMouseButtonGesture);
+    if (QScroller *scroller = QScroller::scroller(m_scroll->viewport())) {
+        QScrollerProperties properties = scroller->scrollerProperties();
+        properties.setScrollMetric(QScrollerProperties::HorizontalOvershootPolicy,
+                                   QScrollerProperties::OvershootAlwaysOff);
+        properties.setScrollMetric(QScrollerProperties::VerticalOvershootPolicy,
+                                   QScrollerProperties::OvershootAlwaysOff);
+        scroller->setScrollerProperties(properties);
+        connect(scroller, &QScroller::stateChanged, this,
+                [scroller](QScroller::State state) {
+                    if (state == QScroller::Scrolling)
+                        scroller->stop();
+                });
+    }
 #endif
 
     m_timer = new QTimer(this);
@@ -439,6 +506,22 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_customMines = qBound(0,
                            settings.value(QStringLiteral("custom/mines"), 80).toInt(),
                            maxCustomMines);
+
+    // Snap a previously saved zoom to one of the supported levels.
+    const int savedTileSize =
+        settings.value(QStringLiteral("view/tileSize"), kDefaultTileSize).toInt();
+    int closestLevel = 0;
+    for (int i = 1; i < kTileSizeCount; ++i) {
+        if (std::abs(kTileSizes[i] - savedTileSize)
+            < std::abs(kTileSizes[closestLevel] - savedTileSize))
+            closestLevel = i;
+    }
+    m_tileSize = kTileSizes[closestLevel];
+    m_boardLayout->setSpacing(tileSpacingFor(m_tileSize));
+    const int boardMargin = boardMarginFor(m_tileSize);
+    m_boardLayout->setContentsMargins(boardMargin, boardMargin, boardMargin,
+                                      boardMargin);
+    updateZoomLabel();
 
     for (int i = 0; i < m_difficulty->count(); ++i) {
         // Custom boards vary, so they never get a best-time record.
@@ -478,10 +561,9 @@ void Minesweeper::newGame()
     }
 
     buildBoard();
-    m_status->setText(tr("Click a tile to start. Right-click, or turn on Flag "
-                         "mode on a touch screen, to mark a mine. Click or "
-                         "right-click a number with all its mines flagged to "
-                         "clear the rest around it."));
+    setStatus(QString());
+    m_scroll->horizontalScrollBar()->setValue(0);
+    m_scroll->verticalScrollBar()->setValue(0);
     updateCounters();
 }
 
@@ -509,12 +591,16 @@ void Minesweeper::buildBoard()
     boardPalette.setColor(QPalette::Base, tilePalette().open);
     m_board->setPalette(boardPalette);
 
+    m_boardLayout->setSpacing(tileSpacingFor(m_tileSize));
+    const int boardMargin = boardMarginFor(m_tileSize);
+    m_boardLayout->setContentsMargins(boardMargin, boardMargin, boardMargin,
+                                      boardMargin);
+
     for (int row = 0; row < m_rows; ++row) {
         for (int column = 0; column < m_columns; ++column) {
             const int index = row * m_columns + column;
             auto *button = new QPushButton(m_board);
-            button->setFixedSize(kTileSize, kTileSize);
-            button->setIconSize(QSize(22, 22));
+            applyTileMetrics(button);
             button->setProperty("index", index);
             button->installEventFilter(this);
 #ifdef Q_OS_ANDROID
@@ -537,6 +623,7 @@ void Minesweeper::buildBoard()
     for (int i = 0; i < m_cells.size(); ++i)
         updateButton(i);
     m_board->show();
+    updateZoomLabel();
 }
 
 void Minesweeper::placeMines(int safeIndex)
@@ -746,7 +833,7 @@ void Minesweeper::finish(bool won)
 
         const int difficulty = m_difficulty->currentIndex();
         if (difficulty == kCustomDifficulty) {
-            m_status->setText(
+            setStatus(
                 tr("You cleared the field in %1.").arg(formatTime(m_seconds)));
         } else {
             const bool newBest =
@@ -758,13 +845,13 @@ void Minesweeper::finish(bool won)
                 settings.setValue(bestTimeKey(difficulty), m_seconds);
                 m_difficulty->setItemData(difficulty, formatTime(m_seconds),
                                           kBestTimeRole);
-                m_status->setText(
+                setStatus(
                     tr("You cleared the field in %1 - a new best time!")
                         .arg(formatTime(m_seconds)));
             } else {
-                m_status->setText(tr("You cleared the field in %1. Best: %2.")
-                                      .arg(formatTime(m_seconds),
-                                           formatTime(m_bestTimes.value(difficulty))));
+                setStatus(tr("You cleared the field in %1. Best: %2.")
+                              .arg(formatTime(m_seconds),
+                                   formatTime(m_bestTimes.value(difficulty))));
             }
         }
         // Refresh the counters so the new record shows up next to the clock.
@@ -778,7 +865,7 @@ void Minesweeper::finish(bool won)
                 cell.wrong = true;
             updateButton(i);
         }
-        m_status->setText(tr("Boom! Game over. Press New to try again."));
+        setStatus(tr("Boom! Game over. Press New to try again."));
     }
 
     updateCounters();
@@ -847,6 +934,126 @@ void Minesweeper::updateCounters()
     m_bestTime->setText(best == m_bestTimes.cend()
                             ? tr("Best: -")
                             : tr("Best: %1").arg(formatTime(*best)));
+}
+
+void Minesweeper::setStatus(const QString &text)
+{
+    // The instructions used to live here and took a permanent row on a phone.
+    // Now the row only appears when there is a result to report.
+    m_status->setText(text);
+    m_status->setVisible(!text.isEmpty());
+}
+
+void Minesweeper::setTileSize(int size)
+{
+    m_tileSize = qBound(kMinTileSize, size, kMaxTileSize);
+
+    m_boardLayout->setSpacing(tileSpacingFor(m_tileSize));
+    const int boardMargin = boardMarginFor(m_tileSize);
+    m_boardLayout->setContentsMargins(boardMargin, boardMargin, boardMargin,
+                                      boardMargin);
+
+    for (QPushButton *button : m_buttons)
+        applyTileMetrics(button);
+    m_board->adjustSize();
+    updateZoomLabel();
+
+    QSettings settings;
+    settings.setValue(QStringLiteral("view/tileSize"), m_tileSize);
+}
+
+void Minesweeper::applyTileMetrics(QPushButton *button) const
+{
+    button->setFixedSize(m_tileSize, m_tileSize);
+
+    const int iconSize = qMax(10, qRound(m_tileSize * 0.62));
+    button->setIconSize(QSize(iconSize, iconSize));
+
+    QFont tileFont = button->font();
+    tileFont.setPixelSize(qMax(8, qRound(m_tileSize * 0.52)));
+    tileFont.setBold(true);
+    button->setFont(tileFont);
+}
+
+void Minesweeper::updateZoomLabel()
+{
+    m_zoomReset->setText(
+        tr("%1%").arg(qRound(100.0 * m_tileSize / kDefaultTileSize)));
+}
+
+void Minesweeper::zoomTo(int level)
+{
+    level = qBound(0, level, kTileSizeCount - 1);
+    if (kTileSizes[level] == m_tileSize)
+        return;
+
+    // Keep the point under the centre of the viewport while the tiles grow or
+    // shrink, so zooming does not lose the player's place on a big board.
+    const int viewWidth = m_scroll->viewport()->width();
+    const int viewHeight = m_scroll->viewport()->height();
+    const double centerX =
+        (m_scroll->horizontalScrollBar()->value() + viewWidth / 2.0)
+        / qMax(1, m_board->width());
+    const double centerY =
+        (m_scroll->verticalScrollBar()->value() + viewHeight / 2.0)
+        / qMax(1, m_board->height());
+
+    setTileSize(kTileSizes[level]);
+
+    m_scroll->horizontalScrollBar()->setValue(
+        qRound(centerX * m_board->width() - viewWidth / 2.0));
+    m_scroll->verticalScrollBar()->setValue(
+        qRound(centerY * m_board->height() - viewHeight / 2.0));
+}
+
+void Minesweeper::zoomIn()
+{
+    for (int i = 0; i < kTileSizeCount; ++i) {
+        if (kTileSizes[i] > m_tileSize) {
+            zoomTo(i);
+            return;
+        }
+    }
+}
+
+void Minesweeper::zoomOut()
+{
+    for (int i = kTileSizeCount - 1; i >= 0; --i) {
+        if (kTileSizes[i] < m_tileSize) {
+            zoomTo(i);
+            return;
+        }
+    }
+}
+
+void Minesweeper::resetZoom()
+{
+    for (int i = 0; i < kTileSizeCount; ++i) {
+        if (kTileSizes[i] == kDefaultTileSize) {
+            zoomTo(i);
+            return;
+        }
+    }
+}
+
+void Minesweeper::fitBoard()
+{
+    // Pick the largest level whose board, including its spacing and margins,
+    // fits the visible part of the scroll area.
+    const QSize available = m_scroll->viewport()->size();
+    int best = 0;
+    for (int i = 0; i < kTileSizeCount; ++i) {
+        const int size = kTileSizes[i];
+        const int spacing = tileSpacingFor(size);
+        const int margin = boardMarginFor(size);
+        const int width =
+            m_columns * size + (m_columns - 1) * spacing + 2 * margin;
+        const int height =
+            m_rows * size + (m_rows - 1) * spacing + 2 * margin;
+        if (width <= available.width() && height <= available.height())
+            best = i;
+    }
+    zoomTo(best);
 }
 
 void Minesweeper::tick()
