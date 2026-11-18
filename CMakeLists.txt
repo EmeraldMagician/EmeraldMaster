@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(EmeraldMaster VERSION 0.3 LANGUAGES CXX)
+project(EmeraldMaster VERSION 0.3.1 LANGUAGES CXX)
 
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
@@ -68,8 +68,8 @@ if(ANDROID)
     # Bump the version code for every published release so devices can update
     # in place. versionName is the human-readable version.
     set_target_properties(EmeraldMaster PROPERTIES
-        QT_ANDROID_VERSION_CODE 3
-        QT_ANDROID_VERSION_NAME "0.3.0")
+        QT_ANDROID_VERSION_CODE 4
+        QT_ANDROID_VERSION_NAME "0.3.1")
 endif()
 
 include(GNUInstallDirs)
