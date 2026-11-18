@@ -479,9 +479,9 @@ void Minesweeper::newGame()
 
     buildBoard();
     m_status->setText(tr("Click a tile to start. Right-click, or turn on Flag "
-                         "mode on a touch screen, to mark a mine. Click a "
-                         "number with all its mines flagged to clear the rest "
-                         "around it."));
+                         "mode on a touch screen, to mark a mine. Click or "
+                         "right-click a number with all its mines flagged to "
+                         "clear the rest around it."));
     updateCounters();
 }
 
@@ -590,16 +590,18 @@ void Minesweeper::onButtonClicked(int index)
     if (m_gameOver || index < 0 || index >= m_cells.size())
         return;
 
-    if (m_flagMode->isChecked()) {
-        toggleFlag(index);
-        return;
-    }
-
-    // A regular click on an opened number clears the tiles around it (a chord)
-    // when the flags there match the digit, as in the classic game.
+    // A click on an opened number clears the tiles around it (a chord) when the
+    // flags there match the digit, as in the classic game. Check this before
+    // Flag mode: the flag toggle only applies to unopened tiles, so tapping a
+    // number should chord without having to turn Flag mode off first.
     const Cell &cell = m_cells.at(index);
     if (cell.revealed && !cell.mine && cell.adjacent > 0) {
         revealNeighbours(index);
+        return;
+    }
+
+    if (m_flagMode->isChecked()) {
+        toggleFlag(index);
         return;
     }
 
@@ -990,7 +992,16 @@ bool Minesweeper::eventFilter(QObject *watched, QEvent *event)
             if (auto *button = qobject_cast<QPushButton *>(watched)) {
                 const QVariant index = button->property("index");
                 if (index.isValid()) {
-                    toggleFlag(index.toInt());
+                    const int cellIndex = index.toInt();
+                    if (cellIndex < 0 || cellIndex >= m_cells.size())
+                        return false;
+                    const Cell &cell = m_cells.at(cellIndex);
+                    // On an opened number the right button chords, just like a
+                    // regular click. On an unopened tile it still flags.
+                    if (cell.revealed && !cell.mine && cell.adjacent > 0)
+                        revealNeighbours(cellIndex);
+                    else
+                        toggleFlag(cellIndex);
                     return true;
                 }
             }
