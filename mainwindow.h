@@ -27,6 +27,7 @@ protected:
 
 private slots:
     void openMiniApp(int number);
+    void goBack();
     void showMenu();
 
 private:
@@ -40,6 +41,7 @@ private:
     QShortcut *m_backShortcut = nullptr;
     Minesweeper *m_minesweeper = nullptr;
     QWidget *m_activeApp = nullptr;
+    int m_activeNumber = 0;
     int m_columns = 0;
 };
 #endif // MAINWINDOW_H

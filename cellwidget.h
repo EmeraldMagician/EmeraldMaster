@@ -2,6 +2,7 @@
 #define CELLWIDGET_H
 
 #include <QFrame>
+#include <QPoint>
 
 class QIcon;
 class QLabel;
@@ -43,6 +44,7 @@ protected:
 
 private:
     int m_number;
+    QPoint m_pressPosition;
     QLabel *m_numberLabel = nullptr;
     QLabel *m_hintLabel = nullptr;
     QWidget *m_content = nullptr;

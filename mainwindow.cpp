@@ -5,6 +5,7 @@
 #include "./ui_mainwindow.h"
 
 #include <QEvent>
+#include <QLayoutItem>
 #include <QShortcut>
 #include <QStyle>
 
@@ -72,26 +73,38 @@ void MainWindow::layoutCells()
     if (m_cells.isEmpty())
         return;
 
+    const QSize viewport = ui->scrollArea->viewport()->size();
+    const QMargins margins = ui->gridLayout->contentsMargins();
+    const int horizontalSpacing = ui->gridLayout->horizontalSpacing();
+    const QSize minCell = m_cells.first()->minimumSize();
+    const int count = m_cells.size();
+
     // Fit as many columns as the current viewport allows, never more than
     // MaxGridColumns. On a desktop window this is MaxGridColumns.
-    const int minCellWidth = m_cells.first()->minimumWidth();
-    const QMargins margins = ui->gridLayout->contentsMargins();
-    const int spacing = ui->gridLayout->horizontalSpacing();
-    const int available = ui->scrollArea->viewport()->width()
-                          - margins.left() - margins.right();
-    const int columns = qBound(1, (available + spacing) / (minCellWidth + spacing),
-                               MaxGridColumns);
+    const int availableWidth = viewport.width() - margins.left() - margins.right();
+    const int columns = qBound(
+        1,
+        (availableWidth + horizontalSpacing)
+            / (minCell.width() + horizontalSpacing),
+        MaxGridColumns);
+
     if (columns == m_columns)
         return;
     m_columns = columns;
 
-    // Clear the stretches of the previous arrangement first.
+    // Re-adding a widget that is still in the grid leaves the old cell behind,
+    // so clear the items (not the widgets) before arranging them again.
+    while (QLayoutItem *item = ui->gridLayout->takeAt(0))
+        delete item;
+
+    // Stretches belong to the column index, not to the item, so an empty
+    // column left over from a wider arrangement would keep taking space.
     for (int column = 0; column < MaxGridColumns; ++column)
         ui->gridLayout->setColumnStretch(column, 0);
-    for (int row = 0; row < m_cells.size(); ++row)
+    for (int row = 0; row < count; ++row)
         ui->gridLayout->setRowStretch(row, 0);
 
-    for (int i = 0; i < m_cells.size(); ++i)
+    for (int i = 0; i < count; ++i)
         ui->gridLayout->addWidget(m_cells.at(i), i / columns, i % columns);
 
     // Let the tiles share the whole viewport, so the grid only scrolls
@@ -99,8 +112,8 @@ void MainWindow::layoutCells()
     for (int column = 0; column < columns; ++column)
         ui->gridLayout->setColumnStretch(column, 1);
 
-    const int rows = (m_cells.size() + columns - 1) / columns;
-    for (int row = 0; row < rows; ++row)
+    const int rowCount = (count + columns - 1) / columns;
+    for (int row = 0; row < rowCount; ++row)
         ui->gridLayout->setRowStretch(row, 1);
 }
 
@@ -118,14 +131,15 @@ void MainWindow::setupNavigation()
     connect(ui->backButton, &QPushButton::clicked, this, &MainWindow::showMenu);
 #endif
 
-    // Esc returns to the grid from anywhere in the window (desktop keyboards).
-    // Window-level context matters on touch devices: a tap does not
-    // necessarily leave any widget focused, and the widget that was tapped
-    // may already be hidden after switching pages.
+    // Esc asks the open app to go back, then returns to the grid. Window-level
+    // context matters on touch devices: a tap does not necessarily leave any
+    // widget focused, and the widget that was tapped may already be hidden
+    // after switching pages.
     auto *escapeShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escapeShortcut->setContext(Qt::WindowShortcut);
-    connect(escapeShortcut, &QShortcut::activated, this, &MainWindow::showMenu);
+    connect(escapeShortcut, &QShortcut::activated, this, &MainWindow::goBack);
 
+#ifdef Q_OS_ANDROID
     // Android's back gesture/key is a navigation request rather than a close
     // request (Qt 6.12 sends the app to the background if nobody handles it).
     // It is only enabled while a mini app is open: on the grid page it stays
@@ -135,7 +149,22 @@ void MainWindow::setupNavigation()
     m_backShortcut = new QShortcut(QKeySequence(Qt::Key_Back), this);
     m_backShortcut->setContext(Qt::WindowShortcut);
     m_backShortcut->setEnabled(false);
-    connect(m_backShortcut, &QShortcut::activated, this, &MainWindow::showMenu);
+    connect(m_backShortcut, &QShortcut::activated, this, &MainWindow::goBack);
+#endif
+}
+
+void MainWindow::goBack()
+{
+    // Give the open mini app the first say: its overlays are child widgets,
+    // so nothing else would consume Esc or Back for them. Leaving the page
+    // with the custom-game prompt still open would hide it mid-loop and show
+    // it again the next time the tile is opened.
+    if (auto *minesweeper = qobject_cast<Minesweeper *>(m_activeApp)) {
+        if (minesweeper->handleBack())
+            return;
+    }
+
+    showMenu();
 }
 
 void MainWindow::showAppWidget(QWidget *widget)
@@ -166,6 +195,7 @@ void MainWindow::openMiniApp(int number)
 
     // Keep the number up to date even when a real app covers it, because
     // showMenu() uses it to restore focus to the tile that was opened.
+    m_activeNumber = number;
     ui->appLabel->setText(QString::number(number));
 
     switch (number) {
@@ -183,7 +213,8 @@ void MainWindow::openMiniApp(int number)
     }
 
     ui->stackedWidget->setCurrentWidget(ui->appPage);
-    m_backShortcut->setEnabled(true);
+    if (m_backShortcut)
+        m_backShortcut->setEnabled(true);
     setWindowTitle(tr("Emerald Master - %1").arg(ui->appTitleLabel->text()));
 }
 
@@ -193,7 +224,8 @@ void MainWindow::showMenu()
         return;
 
     ui->stackedWidget->setCurrentWidget(ui->gridPage);
-    m_backShortcut->setEnabled(false);
+    if (m_backShortcut)
+        m_backShortcut->setEnabled(false);
     setWindowTitle(tr("Emerald Master"));
 
 #ifndef Q_OS_ANDROID
@@ -201,7 +233,7 @@ void MainWindow::showMenu()
     // users can keep navigating from where they left off. Touch devices have
     // no keyboard, and focusing tiles leaves another tile highlighted when
     // the stacked widget shows the grid again.
-    const int index = ui->appLabel->text().toInt() - 1;
+    const int index = m_activeNumber - 1;
     if (CellWidget *cell = m_cells.value(index))
         cell->setFocus(Qt::OtherFocusReason);
 #endif

@@ -1,5 +1,6 @@
 #include "cellwidget.h"
 
+#include <QApplication>
 #include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
@@ -19,8 +20,10 @@ CellWidget::CellWidget(int number, QWidget *parent)
 #else
     setFocusPolicy(Qt::StrongFocus);
 #endif
-    // Small enough that two tiles fit side by side on a phone screen.
-    setMinimumSize(160, 140);
+    // Small enough that two tiles fit side by side on a phone screen, and
+    // short enough that five rows of tiles still fit a 360x640 viewport
+    // without a scrollbar stealing the width the second column needs.
+    setMinimumSize(150, 100);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setToolTip(tr("Mini app %1").arg(m_number));
     QString style = QStringLiteral(
@@ -96,8 +99,11 @@ void CellWidget::setContentWidget(QWidget *widget)
 
 void CellWidget::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && focusPolicy() != Qt::NoFocus)
-        setFocus(Qt::MouseFocusReason);
+    if (event->button() == Qt::LeftButton) {
+        m_pressPosition = event->position().toPoint();
+        if (focusPolicy() != Qt::NoFocus)
+            setFocus(Qt::MouseFocusReason);
+    }
 
     // Ignored on purpose: the parent scroll area (and its touch scroller on
     // Android) only sees the event if it propagates, which lets a finger drag
@@ -108,9 +114,13 @@ void CellWidget::mousePressEvent(QMouseEvent *event)
 void CellWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     // Acting on release rather than press means a drag that scrolls the grid
-    // never counts as a click: a scrolling gesture consumes the move events
-    // and releases the button somewhere else.
-    if (event->button() == Qt::LeftButton
+    // never counts as a click. The distance check matters because a short
+    // drag can end before the scroller takes over, and the release then still
+    // lands inside the same tile.
+    const bool stayedPut =
+        (event->position().toPoint() - m_pressPosition).manhattanLength()
+        <= QApplication::startDragDistance();
+    if (event->button() == Qt::LeftButton && stayedPut
         && rect().contains(event->position().toPoint())) {
         emit clicked(m_number);
     }

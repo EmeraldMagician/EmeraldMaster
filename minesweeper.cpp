@@ -12,31 +12,35 @@
 #include <QEventLoop>
 #include <QFont>
 #include <QFormLayout>
-#include <QGridLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QHideEvent>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPalette>
 #include <QPushButton>
 #include <QRandomGenerator>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
+#include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTimer>
+#include <QTouchEvent>
 #include <QVBoxLayout>
-
-#ifdef Q_OS_ANDROID
-#include <QScroller>
-#endif
+#include <QWheelEvent>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 namespace {
@@ -60,30 +64,22 @@ constexpr int kCustomDifficulty = 4;
 constexpr int kMaxCustomSize = 100;
 
 // Zoom levels. The default is a middle level, so there is room to go both
-// smaller (useful for the 100x100 Insane board) and larger (for small boards
-// on a high-density screen).
+// smaller (down to a true whole-board overview) and larger (for small boards
+// on a high-density screen). Fit and pinch zoom can select sizes between the
+// listed steps as well.
 constexpr int kDefaultTileSize = 32;
-constexpr int kMinTileSize = 16;
+constexpr int kMinTileSize = 2;
 constexpr int kMaxTileSize = 64;
-constexpr int kTileSizes[] = {16, 20, 24, 32, 40, 48, 64};
+constexpr int kTileSizes[] = {2, 3, 4, 5, 6, 8, 10, 12,
+                              16, 20, 24, 32, 40, 48, 64};
 constexpr int kTileSizeCount = int(sizeof(kTileSizes) / sizeof(kTileSizes[0]));
-
-int tileSpacingFor(int tileSize)
-{
-    return qMax(1, tileSize / 16);
-}
-
-int boardMarginFor(int tileSize)
-{
-    return qMax(2, tileSize / 8);
-}
 
 bool isDarkTheme()
 {
     return QGuiApplication::palette().color(QPalette::Window).lightness() < 128;
 }
 
-QColor numberColor(int number)
+QColor numberColor(int number, bool dark)
 {
     static const QRgb lightColors[] = {
         0x00000000,
@@ -109,13 +105,13 @@ QColor numberColor(int number)
     };
 
     const int index = qBound(1, number, 8);
-    return QColor::fromRgb(isDarkTheme() ? darkColors[index] : lightColors[index]);
+    return QColor::fromRgb(dark ? darkColors[index] : lightColors[index]);
 }
 
-QColor warningColor()
+QColor warningColor(bool dark)
 {
-    return isDarkTheme() ? QColor(QStringLiteral("#ffb74d"))
-                         : QColor(QStringLiteral("#e65100"));
+    return dark ? QColor(QStringLiteral("#ffb74d"))
+                : QColor(QStringLiteral("#e65100"));
 }
 
 // Explicit greys, not palette roles: on some styles (and on Android)
@@ -133,9 +129,9 @@ struct TilePalette
     QColor text;
 };
 
-TilePalette tilePalette()
+TilePalette tilePalette(bool dark)
 {
-    if (isDarkTheme()) {
+    if (dark) {
         return {QColor(QStringLiteral("#4a4a4a")),
                 QColor(QStringLiteral("#707070")),
                 QColor(QStringLiteral("#585858")),
@@ -155,56 +151,187 @@ TilePalette tilePalette()
             QColor(QStringLiteral("#1f1f1f"))};
 }
 
-// An unopened tile: raised medium grey, clearly darker than an opened cell.
-QString hiddenTileStyle(bool flagged)
+// The flag and mine markers are drawn straight into the board with the same
+// shapes the old QIcon-based tiles used, so the look stays familiar at every
+// zoom level without creating a pixmap for each cell.
+void paintFlagGlyph(QPainter &painter, const QRect &rect, bool dark)
 {
-    const TilePalette palette = tilePalette();
-    const QString background = flagged ? palette.flagged.name() : palette.hidden.name();
-    const QString border = flagged ? warningColor().name() : palette.hiddenBorder.name();
-    const QString text = flagged ? warningColor().name() : palette.text.name();
-    QString style = QStringLiteral(
-        "QPushButton {"
-        "  background-color: %1;"
-        "  border: 1px solid %2;"
-        "  border-radius: 3px;"
-        "  color: %3;"
-        "  font-weight: bold;"
-        "  padding: 0px;"
-        "}").arg(background, border, text);
-#ifndef Q_OS_ANDROID
-    style += QStringLiteral(
-        "QPushButton:hover { background-color: %1; }"
-        "QPushButton:pressed { background-color: %2; }")
-                 .arg(palette.hiddenHover.name(), palette.hiddenPressed.name());
-#endif
-    return style;
+    const QColor cloth = dark ? QColor(QStringLiteral("#ff8a80"))
+                              : QColor(QStringLiteral("#c62828"));
+    const QColor pole = dark ? QColor(QStringLiteral("#efebe9"))
+                             : QColor(QStringLiteral("#4e342e"));
+    const qreal size = rect.width() * 0.72;
+    if (size < 5.0) {
+        const qreal side = qMax<qreal>(1.0, size * 0.55);
+        painter.fillRect(QRectF(rect.center().x() - side / 2,
+                                rect.center().y() - side / 2, side, side),
+                         cloth);
+        return;
+    }
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.translate(rect.center());
+    painter.scale(size / 24.0, size / 24.0);
+    painter.translate(-12.0, -12.0);
+
+    QPen polePen(pole, 1.8, Qt::SolidLine, Qt::RoundCap);
+    painter.setPen(polePen);
+    painter.drawLine(QPointF(8.0, 3.6), QPointF(8.0, 20.4));
+    painter.drawLine(QPointF(4.9, 20.4), QPointF(11.1, 20.4));
+
+    QPainterPath pennant;
+    pennant.moveTo(9.0, 4.1);
+    pennant.lineTo(20.2, 8.2);
+    pennant.lineTo(9.0, 12.3);
+    pennant.closeSubpath();
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(cloth);
+    painter.drawPath(pennant);
+    painter.restore();
 }
 
-// An opened tile: flat, light and blending into the board, with only a grid
-// line. `background`/`border` override the defaults for mines and wrong flags.
-QString revealedTileStyle(const QString &textColor,
-                          const QString &background = QString(),
-                          const QString &border = QString())
+void paintMineGlyph(QPainter &painter, const QRect &rect, bool dark)
 {
-    const TilePalette palette = tilePalette();
-    const QString bg = background.isEmpty() ? palette.open.name() : background;
-    const QString line = border.isEmpty() ? palette.openBorder.name() : border;
-    return QStringLiteral(
-        "QPushButton {"
-        "  background-color: %1;"
-        "  border: 1px solid %2;"
-        "  border-radius: 0px;"
-        "  color: %3;"
-        "  font-weight: bold;"
-        "  padding: 0px;"
-        "}"
-        // Qt paints disabled buttons with the disabled palette, so spell the
-        // opened-tile colours out for that state too.
-        "QPushButton:disabled {"
-        "  background-color: %1;"
-        "  border: 1px solid %2;"
-        "  color: %3;"
-        "}").arg(bg, line, textColor);
+    const QColor body = dark ? QColor(QStringLiteral("#eceff1"))
+                             : QColor(QStringLiteral("#212121"));
+    const QColor glint = dark ? QColor(QStringLiteral("#242424"))
+                              : QColor(QStringLiteral("#f7f7f7"));
+    const qreal size = rect.width() * 0.75;
+    if (size < 5.0) {
+        const qreal radius = qMax<qreal>(1.0, size * 0.28);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(body);
+        painter.drawEllipse(QPointF(rect.center()), radius, radius);
+        return;
+    }
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.translate(rect.center());
+    painter.scale(size / 24.0, size / 24.0);
+    painter.translate(-12.0, -12.0);
+
+    const QRectF box(3.0, 3.0, 18.0, 18.0);
+    const QPointF center = box.center();
+    const qreal bodyRadius = box.width() * 0.25;
+    const qreal spikeInner = bodyRadius * 1.08;
+    const qreal spikeOuter = bodyRadius * 1.82;
+    constexpr qreal kPi = 3.14159265358979323846;
+
+    QPen spikePen(body, box.width() * 0.09, Qt::SolidLine, Qt::RoundCap);
+    painter.setPen(spikePen);
+    for (int i = 0; i < 8; ++i) {
+        const qreal angle = i * kPi / 4.0;
+        const QPointF direction(std::cos(angle), std::sin(angle));
+        painter.drawLine(center + direction * spikeInner,
+                         center + direction * spikeOuter);
+    }
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(body);
+    painter.drawEllipse(center, bodyRadius, bodyRadius);
+
+    painter.setBrush(glint);
+    painter.drawEllipse(center - QPointF(bodyRadius * 0.34, bodyRadius * 0.34),
+                        bodyRadius * 0.26, bodyRadius * 0.26);
+    painter.restore();
+}
+
+void paintWrongGlyph(QPainter &painter, const QRect &rect)
+{
+    const QPointF center = rect.center();
+    const qreal radius = rect.width() * 0.22;
+    if (radius < 2.0) {
+        painter.fillRect(QRectF(center.x() - 1, center.y() - 1, 2, 2),
+                         warningColor(isDarkTheme()));
+        return;
+    }
+
+    QPen pen(warningColor(isDarkTheme()),
+             qMax<qreal>(1.0, rect.width() * 0.09), Qt::SolidLine,
+             Qt::RoundCap);
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(pen);
+    painter.drawLine(center + QPointF(-radius, -radius),
+                     center + QPointF(radius, radius));
+    painter.drawLine(center + QPointF(radius, -radius),
+                     center + QPointF(-radius, radius));
+    painter.restore();
+}
+
+// One tile, painted in the same visual language as the old QPushButton tiles:
+// unopened cells are raised grey rounded squares with a one-pixel border, while
+// opened cells are flat and blend into the board.
+void paintTile(QPainter &painter, const QRect &rect,
+               const MinesweeperCell &cell, bool hovered, bool pressed,
+               const TilePalette &palette, bool dark)
+{
+    if (!cell.revealed && !cell.wrong) {
+        QColor background = palette.hidden;
+        QColor border = palette.hiddenBorder;
+        if (cell.flagged) {
+            background = palette.flagged;
+            border = warningColor(dark);
+        } else if (pressed) {
+            background = palette.hiddenPressed;
+        } else if (hovered) {
+            background = palette.hiddenHover;
+        }
+
+        if (rect.width() >= 6) {
+            const qreal radius =
+                qMin<qreal>(3.0, qMax<qreal>(1.0, rect.width() / 5.0));
+            painter.save();
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.setPen(QPen(border, 1.0));
+            painter.setBrush(background);
+            painter.drawRoundedRect(
+                QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
+            painter.restore();
+        } else {
+            painter.fillRect(rect, background);
+        }
+
+        if (cell.flagged)
+            paintFlagGlyph(painter, rect, dark);
+        return;
+    }
+
+    QColor background = palette.open;
+    QColor border = palette.openBorder;
+    if (cell.wrong) {
+        background = QColor(245, 124, 0, 60);
+        border = warningColor(dark);
+    } else if (cell.mine) {
+        background = QColor(211, 47, 47, 70);
+        border = numberColor(3, dark);
+    }
+
+    painter.fillRect(rect, palette.open);
+    if (background != palette.open)
+        painter.fillRect(rect, background);
+
+    if (rect.width() >= 4) {
+        painter.setPen(QPen(border, 1.0));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(rect.adjusted(0, 0, -1, -1));
+    }
+
+    if (cell.wrong) {
+        paintWrongGlyph(painter, rect);
+        return;
+    }
+    if (cell.mine) {
+        paintMineGlyph(painter, rect, dark);
+        return;
+    }
+    if (cell.adjacent > 0 && rect.width() >= 9) {
+        painter.setPen(numberColor(cell.adjacent, dark));
+        painter.drawText(rect, Qt::AlignCenter, QString::number(cell.adjacent));
+    }
 }
 
 constexpr int kBestTimeRole = Qt::UserRole + 1;
@@ -359,7 +486,566 @@ public:
         popup->setGeometry(geometry);
     }
 };
+
+// Qt 5 and Qt 6 spell a few event accessors differently.
+QPointF touchPointPosition(const QTouchEvent::TouchPoint &point)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return point.position();
+#else
+    return point.pos();
+#endif
+}
+
+QPointF touchPointGlobalPosition(const QTouchEvent::TouchPoint &point)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return point.globalPosition();
+#else
+    return point.screenPos();
+#endif
+}
+
+QList<QTouchEvent::TouchPoint> touchPoints(const QTouchEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->points();
+#else
+    return event->touchPoints();
+#endif
+}
+
+bool touchPointIsActive(const QTouchEvent::TouchPoint &point)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QEventPoint::State state = point.state();
+    return state == QEventPoint::Pressed || state == QEventPoint::Updated
+           || state == QEventPoint::Stationary;
+#else
+    const Qt::TouchPointState state = point.state();
+    return state == Qt::TouchPointPressed || state == Qt::TouchPointMoved
+           || state == Qt::TouchPointStationary;
+#endif
+}
+
+QPoint mousePosition(const QMouseEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->position().toPoint();
+#else
+    return event->pos();
+#endif
+}
+
+QPoint mouseGlobalPosition(const QMouseEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->globalPosition().toPoint();
+#else
+    return event->globalPos();
+#endif
+}
+
+QPoint wheelPosition(const QWheelEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->position().toPoint();
+#else
+    return event->pos();
+#endif
+}
+
+QPoint nativeGesturePosition(const QNativeGestureEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->position().toPoint();
+#else
+    return event->pos();
+#endif
+}
+
+qreal distanceBetween(const QPointF &a, const QPointF &b)
+{
+    return std::hypot(a.x() - b.x(), a.y() - b.y());
+}
 } // namespace
+
+MinesweeperBoard::MinesweeperBoard(QWidget *parent)
+    : QWidget(parent)
+{
+    setAttribute(Qt::WA_AcceptTouchEvents, true);
+    setFocusPolicy(Qt::NoFocus);
+    setMouseTracking(true);
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+}
+
+int MinesweeperBoard::spacingFor(int tileSize)
+{
+    // Tiny overview tiles have no gap: at that scale a gap is as wide as a
+    // cell and would hide most of the board.
+    if (tileSize < 12)
+        return 0;
+    return qMax(1, tileSize / 16);
+}
+
+int MinesweeperBoard::marginFor(int tileSize)
+{
+    if (tileSize < 8)
+        return 1;
+    return qMax(2, tileSize / 8);
+}
+
+QSize MinesweeperBoard::documentSize(int rows, int columns, int tileSize)
+{
+    const int spacing = spacingFor(tileSize);
+    const int margin = marginFor(tileSize);
+
+    int width = columns > 0 ? columns * tileSize + (columns - 1) * spacing : 0;
+    int height = rows > 0 ? rows * tileSize + (rows - 1) * spacing : 0;
+    width += 2 * margin;
+    height += 2 * margin;
+    return QSize(qMax(1, width), qMax(1, height));
+}
+
+void MinesweeperBoard::setGrid(int rows, int columns, int tileSize)
+{
+    m_rows = qMax(0, rows);
+    m_columns = qMax(0, columns);
+    m_tileSize = qBound(kMinTileSize, tileSize, kMaxTileSize);
+    m_hoverIndex = -1;
+    m_pressedIndex = -1;
+    m_dragging = false;
+    resetTouch();
+    setFixedSize(documentSize(m_rows, m_columns, m_tileSize));
+    update();
+}
+
+void MinesweeperBoard::setTileSize(int tileSize)
+{
+    const int bounded = qBound(kMinTileSize, tileSize, kMaxTileSize);
+    if (bounded == m_tileSize && size() == documentSize(m_rows, m_columns, bounded))
+        return;
+
+    m_tileSize = bounded;
+    setFixedSize(documentSize(m_rows, m_columns, m_tileSize));
+    update();
+}
+
+int MinesweeperBoard::cellAt(const QPoint &position) const
+{
+    return cellAtPoint(position);
+}
+
+int MinesweeperBoard::cellAtPoint(const QPointF &position) const
+{
+    if (!m_cells || m_rows <= 0 || m_columns <= 0)
+        return -1;
+
+    const int step = m_tileSize + spacingFor(m_tileSize);
+    const int margin = marginFor(m_tileSize);
+    const qreal x = position.x() - margin;
+    const qreal y = position.y() - margin;
+    if (x < 0 || y < 0)
+        return -1;
+
+    const int column = int(x) / step;
+    const int row = int(y) / step;
+    if (column >= m_columns || row >= m_rows)
+        return -1;
+    if (int(x) % step >= m_tileSize || int(y) % step >= m_tileSize)
+        return -1;
+    return row * m_columns + column;
+}
+
+QRect MinesweeperBoard::cellRect(int index) const
+{
+    if (index < 0 || index >= m_rows * m_columns)
+        return QRect();
+
+    const int step = m_tileSize + spacingFor(m_tileSize);
+    const int margin = marginFor(m_tileSize);
+    const int row = index / m_columns;
+    const int column = index % m_columns;
+    return QRect(margin + column * step, margin + row * step, m_tileSize,
+                 m_tileSize);
+}
+
+void MinesweeperBoard::paintEvent(QPaintEvent *event)
+{
+    QPainter painter(this);
+    const bool dark = isDarkTheme();
+    const TilePalette palette = tilePalette(dark);
+
+    // Opened cells and the outer margin read as one flat surface.
+    painter.fillRect(event->rect(), palette.open);
+
+    if (!m_cells || m_rows <= 0 || m_columns <= 0)
+        return;
+
+    QFont tileFont = font();
+    tileFont.setBold(true);
+    tileFont.setPixelSize(qMax(7, qRound(m_tileSize * 0.52)));
+    painter.setFont(tileFont);
+
+    const int spacing = spacingFor(m_tileSize);
+    const int margin = marginFor(m_tileSize);
+    const int step = m_tileSize + spacing;
+    const QRect clip = event->rect();
+
+    // Only walk the cells that intersect the exposed region. On the Insane
+    // board this is a few hundred cells even while panning.
+    const int firstRow = qMax(0, (clip.top() - margin) / step);
+    const int lastRow = qMin(m_rows - 1, (clip.bottom() - margin) / step);
+    const int firstColumn = qMax(0, (clip.left() - margin) / step);
+    const int lastColumn =
+        qMin(m_columns - 1, (clip.right() - margin) / step);
+
+    for (int row = firstRow; row <= lastRow; ++row) {
+        const int y = margin + row * step;
+        for (int column = firstColumn; column <= lastColumn; ++column) {
+            const QRect rect(margin + column * step, y, m_tileSize, m_tileSize);
+            if (!rect.intersects(clip))
+                continue;
+
+            const int index = row * m_columns + column;
+            paintTile(painter, rect, m_cells->at(index),
+                      index == m_hoverIndex, index == m_pressedIndex, palette,
+                      dark);
+        }
+    }
+}
+
+void MinesweeperBoard::mousePressEvent(QMouseEvent *event)
+{
+    // Touches are handled directly so that pinch zoom and direct panning do
+    // not fight the synthesized mouse events.
+    if (event->source() == Qt::MouseEventSynthesizedByQt) {
+        event->ignore();
+        return;
+    }
+
+    if (event->button() == Qt::RightButton) {
+        const int index = cellAtPoint(mousePosition(event));
+        if (index >= 0)
+            emit cellRightClicked(index);
+        event->accept();
+        return;
+    }
+
+    if (event->button() == Qt::LeftButton) {
+        m_pressedIndex = cellAtPoint(mousePosition(event));
+        m_hoverIndex = -1;
+        m_pressPosition = mousePosition(event);
+        m_lastDragPosition = mouseGlobalPosition(event);
+        m_dragging = false;
+        update();
+        event->accept();
+        return;
+    }
+
+    QWidget::mousePressEvent(event);
+}
+
+void MinesweeperBoard::mouseMoveEvent(QMouseEvent *event)
+{
+    if (event->source() == Qt::MouseEventSynthesizedByQt) {
+        event->ignore();
+        return;
+    }
+
+    const QPoint position = mousePosition(event);
+
+    if (!(event->buttons() & Qt::LeftButton)) {
+        const int index = cellAtPoint(position);
+        if (index != m_hoverIndex) {
+            if (m_hoverIndex >= 0)
+                update(cellRect(m_hoverIndex));
+            m_hoverIndex = index;
+            if (m_hoverIndex >= 0)
+                update(cellRect(m_hoverIndex));
+        }
+        event->accept();
+        return;
+    }
+
+    const QPoint global = mouseGlobalPosition(event);
+    if (!m_dragging
+        && (position - m_pressPosition).manhattanLength()
+               >= QApplication::startDragDistance()) {
+        m_dragging = true;
+        const int oldPressed = m_pressedIndex;
+        m_pressedIndex = -1;
+        if (oldPressed >= 0)
+            update(cellRect(oldPressed));
+        // Keep m_lastDragPosition at the press point so the first pan applies
+        // the full movement instead of losing the drag threshold as an offset.
+    }
+
+    if (m_dragging) {
+        const QPoint delta = global - m_lastDragPosition;
+        m_lastDragPosition = global;
+        if (!delta.isNull())
+            emit panRequested(delta);
+        event->accept();
+        return;
+    }
+
+    QWidget::mouseMoveEvent(event);
+}
+
+void MinesweeperBoard::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->source() == Qt::MouseEventSynthesizedByQt) {
+        event->ignore();
+        return;
+    }
+
+    if (event->button() != Qt::LeftButton) {
+        QWidget::mouseReleaseEvent(event);
+        return;
+    }
+
+    const int pressed = m_pressedIndex;
+    const bool dragged = m_dragging;
+    m_pressedIndex = -1;
+    m_dragging = false;
+    m_hoverIndex = cellAtPoint(mousePosition(event));
+    update();
+
+    if (!dragged && pressed >= 0)
+        emit cellClicked(pressed);
+    event->accept();
+}
+
+void MinesweeperBoard::wheelEvent(QWheelEvent *event)
+{
+    if (!(event->modifiers() & Qt::ControlModifier)) {
+        // Let the scroll area handle ordinary wheel scrolling.
+        event->ignore();
+        return;
+    }
+
+    const int delta = event->angleDelta().y();
+    if (delta == 0) {
+        event->ignore();
+        return;
+    }
+
+    const qreal factor = delta > 0 ? 1.25 : 0.8;
+    const int size = qBound(kMinTileSize, qRound(m_tileSize * factor),
+                            kMaxTileSize);
+    if (size != m_tileSize)
+        emit zoomRequested(size, wheelPosition(event));
+    event->accept();
+}
+
+void MinesweeperBoard::leaveEvent(QEvent *event)
+{
+    if (m_hoverIndex >= 0) {
+        const int oldHover = m_hoverIndex;
+        m_hoverIndex = -1;
+        update(cellRect(oldHover));
+    }
+    QWidget::leaveEvent(event);
+}
+
+bool MinesweeperBoard::event(QEvent *event)
+{
+    switch (event->type()) {
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+    case QEvent::TouchEnd:
+    case QEvent::TouchCancel:
+        handleTouch(static_cast<QTouchEvent *>(event));
+        return true;
+    case QEvent::NativeGesture: {
+        // A trackpad pinch arrives as a native gesture on the desktop. On a
+        // touchscreen the same pinch is handled above through QTouchEvent.
+        if (m_touchPinching)
+            return true;
+        auto *gesture = static_cast<QNativeGestureEvent *>(event);
+        if (gesture->gestureType() == Qt::ZoomNativeGesture) {
+            const int size = qBound(
+                kMinTileSize, qRound(m_tileSize * (1.0 + gesture->value())),
+                kMaxTileSize);
+            if (size != m_tileSize)
+                emit zoomRequested(size, nativeGesturePosition(gesture));
+            return true;
+        }
+        if (gesture->gestureType() == Qt::EndNativeGesture) {
+            emit zoomGestureFinished();
+            return true;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    return QWidget::event(event);
+}
+
+void MinesweeperBoard::handleTouch(QTouchEvent *event)
+{
+    if (event->type() == QEvent::TouchCancel) {
+        const bool wasPinching = m_touchPinching;
+        resetTouch();
+        if (m_pressedIndex >= 0) {
+            const int oldPressed = m_pressedIndex;
+            m_pressedIndex = -1;
+            update(cellRect(oldPressed));
+        }
+        if (wasPinching)
+            emit zoomGestureFinished();
+        return;
+    }
+
+    const auto points = touchPoints(event);
+    for (const auto &point : points) {
+        const int id = point.id();
+        if (touchPointIsActive(point)) {
+            m_touchPositions.insert(id, touchPointPosition(point));
+            m_touchGlobals.insert(id, touchPointGlobalPosition(point));
+        } else {
+            m_touchPositions.remove(id);
+            m_touchGlobals.remove(id);
+        }
+    }
+
+    if (event->type() == QEvent::TouchBegin) {
+        m_touchMoved = false;
+        m_touchPinching = false;
+        m_touchCell = -1;
+        if (!m_touchGlobals.isEmpty()) {
+            m_touchStart = *m_touchGlobals.constBegin();
+            m_touchLastGlobal = m_touchStart;
+            m_touchCell = cellAtPoint(*m_touchPositions.constBegin());
+        }
+
+        if (m_touchGlobals.size() >= 2) {
+            m_touchPinching = true;
+            m_touchCell = -1;
+            auto it = m_touchGlobals.constBegin();
+            const QPointF first = *it;
+            ++it;
+            const QPointF second = *it;
+            m_pinchStartDistance =
+                qMax<qreal>(1.0, distanceBetween(first, second));
+            m_pinchStartTileSize = m_tileSize;
+            if (m_pressedIndex >= 0) {
+                const int oldPressed = m_pressedIndex;
+                m_pressedIndex = -1;
+                update(cellRect(oldPressed));
+            }
+        } else if (m_touchCell >= 0) {
+            m_pressedIndex = m_touchCell;
+            m_hoverIndex = -1;
+            update(cellRect(m_pressedIndex));
+        }
+        return;
+    }
+
+    if (event->type() == QEvent::TouchEnd) {
+        if (m_touchGlobals.isEmpty()) {
+            const bool wasPinching = m_touchPinching;
+            const bool moved = m_touchMoved;
+            const int cell = m_touchCell;
+            resetTouch();
+            if (m_pressedIndex >= 0) {
+                const int oldPressed = m_pressedIndex;
+                m_pressedIndex = -1;
+                update(cellRect(oldPressed));
+            }
+            if (wasPinching)
+                emit zoomGestureFinished();
+            else if (!moved && cell >= 0)
+                emit cellClicked(cell);
+        }
+        return;
+    }
+
+    // TouchUpdate.
+    if (m_touchGlobals.size() >= 2) {
+        if (!m_touchPinching) {
+            m_touchPinching = true;
+            m_touchMoved = true;
+            m_touchCell = -1;
+            auto it = m_touchGlobals.constBegin();
+            const QPointF first = *it;
+            ++it;
+            const QPointF second = *it;
+            m_pinchStartDistance =
+                qMax<qreal>(1.0, distanceBetween(first, second));
+            m_pinchStartTileSize = m_tileSize;
+            if (m_pressedIndex >= 0) {
+                const int oldPressed = m_pressedIndex;
+                m_pressedIndex = -1;
+                update(cellRect(oldPressed));
+            }
+        }
+
+        auto it = m_touchGlobals.constBegin();
+        const QPointF first = *it;
+        ++it;
+        const QPointF second = *it;
+        const qreal distance = distanceBetween(first, second);
+        const qreal factor = distance / m_pinchStartDistance;
+        const int size = qBound(kMinTileSize,
+                                qRound(m_pinchStartTileSize * factor),
+                                kMaxTileSize);
+        if (size != m_tileSize) {
+            QPointF sum;
+            int count = 0;
+            for (auto position = m_touchPositions.constBegin();
+                 position != m_touchPositions.constEnd(); ++position) {
+                sum += position.value();
+                ++count;
+            }
+            const QPoint anchor =
+                (sum / qMax(1, count)).toPoint();
+            emit zoomRequested(size, anchor);
+        }
+        return;
+    }
+
+    if (m_touchGlobals.size() == 1 && !m_touchPinching) {
+        const QPointF global = *m_touchGlobals.constBegin();
+        if (!m_touchMoved) {
+            if (distanceBetween(global, m_touchStart)
+                < qMax<qreal>(8.0, QApplication::startDragDistance())) {
+                return;
+            }
+            m_touchMoved = true;
+            m_touchCell = -1;
+            if (m_pressedIndex >= 0) {
+                const int oldPressed = m_pressedIndex;
+                m_pressedIndex = -1;
+                update(cellRect(oldPressed));
+            }
+            // m_touchLastGlobal still holds the first touch point, so the
+            // board jumps to the finger rather than trailing it by the
+            // gesture threshold.
+        }
+
+        const QPointF delta = global - m_touchLastGlobal;
+        m_touchLastGlobal = global;
+        if (delta.x() != 0.0 || delta.y() != 0.0)
+            emit panRequested(delta.toPoint());
+    }
+}
+
+void MinesweeperBoard::resetTouch()
+{
+    m_touchPositions.clear();
+    m_touchGlobals.clear();
+    m_touchStart = QPointF();
+    m_touchLastGlobal = QPointF();
+    m_touchMoved = false;
+    m_touchPinching = false;
+    m_pinchStartDistance = 1.0;
+    m_pinchStartTileSize = m_tileSize;
+    m_touchCell = -1;
+}
 
 Minesweeper::Minesweeper(QWidget *parent)
     : QWidget(parent)
@@ -419,26 +1105,31 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_status->setWordWrap(true);
     layout->addWidget(m_status);
 
+    // The whole minefield is a single widget. It paints only the visible cells,
+    // so a 100x100 board pans smoothly and can shrink to a true overview.
     m_scroll = new QScrollArea(this);
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_scroll->setWidgetResizable(false);
     m_scroll->setAlignment(Qt::AlignCenter);
-    m_board = new QWidget(m_scroll);
-    // Opened tiles blend into this background; unopened ones stay raised.
-    m_board->setAutoFillBackground(true);
-    m_board->setBackgroundRole(QPalette::Base);
-    m_boardLayout = new QGridLayout(m_board);
-    m_boardLayout->setSpacing(tileSpacingFor(kDefaultTileSize));
-    m_boardLayout->setContentsMargins(boardMarginFor(kDefaultTileSize),
-                                      boardMarginFor(kDefaultTileSize),
-                                      boardMarginFor(kDefaultTileSize),
-                                      boardMarginFor(kDefaultTileSize));
-    m_scroll->setWidget(m_board);
+    m_boardView = new MinesweeperBoard(m_scroll);
+    m_boardView->setCells(&m_cells);
+    m_scroll->setWidget(m_boardView);
     layout->addWidget(m_scroll, 1);
 
-    // Scaling is done with explicit controls rather than pinch-to-zoom: the
-    // touch scroller already owns the finger for panning, and a two-finger
-    // gesture on top of that would make both behaviours unreliable.
+    connect(m_boardView, &MinesweeperBoard::cellClicked,
+            this, &Minesweeper::onButtonClicked);
+    connect(m_boardView, &MinesweeperBoard::cellRightClicked,
+            this, &Minesweeper::onCellRightClicked);
+    connect(m_boardView, &MinesweeperBoard::panRequested,
+            this, &Minesweeper::panBoard);
+    connect(m_boardView, &MinesweeperBoard::zoomRequested,
+            this, &Minesweeper::zoomBoardAt);
+    connect(m_boardView, &MinesweeperBoard::zoomGestureFinished,
+            this, &Minesweeper::saveZoom);
+
+    // Explicit controls stay alongside the gestures: a tap is easier for a
+    // single step, Fit gives the whole board in one go, and pinch works for
+    // people who expect it. The tooltips explain the buttons on desktop.
     auto *zoomRow = new QHBoxLayout;
     zoomRow->setSpacing(6);
     m_zoomOut = new QPushButton(QStringLiteral("\u2212"), this);
@@ -467,28 +1158,6 @@ Minesweeper::Minesweeper(QWidget *parent)
     zoomRow->addStretch(1);
     layout->addLayout(zoomRow);
 
-#ifdef Q_OS_ANDROID
-    // Expert and Insane are larger than a phone screen: let a finger drag pan
-    // the board. A flick used to keep gliding after the finger lifted, which
-    // made a big board shoot away from the area being inspected. Keep the
-    // direct drag (the board stays under the finger) but stop the kinetic
-    // phase as soon as it starts, and disable the rubber-band overshoot.
-    QScroller::grabGesture(m_scroll->viewport(), QScroller::LeftMouseButtonGesture);
-    if (QScroller *scroller = QScroller::scroller(m_scroll->viewport())) {
-        QScrollerProperties properties = scroller->scrollerProperties();
-        properties.setScrollMetric(QScrollerProperties::HorizontalOvershootPolicy,
-                                   QScrollerProperties::OvershootAlwaysOff);
-        properties.setScrollMetric(QScrollerProperties::VerticalOvershootPolicy,
-                                   QScrollerProperties::OvershootAlwaysOff);
-        scroller->setScrollerProperties(properties);
-        connect(scroller, &QScroller::stateChanged, this,
-                [scroller](QScroller::State state) {
-                    if (state == QScroller::Scrolling)
-                        scroller->stop();
-                });
-    }
-#endif
-
     m_timer = new QTimer(this);
     m_timer->setInterval(1000);
     connect(m_timer, &QTimer::timeout, this, &Minesweeper::tick);
@@ -507,20 +1176,13 @@ Minesweeper::Minesweeper(QWidget *parent)
                            settings.value(QStringLiteral("custom/mines"), 80).toInt(),
                            maxCustomMines);
 
-    // Snap a previously saved zoom to one of the supported levels.
-    const int savedTileSize =
-        settings.value(QStringLiteral("view/tileSize"), kDefaultTileSize).toInt();
-    int closestLevel = 0;
-    for (int i = 1; i < kTileSizeCount; ++i) {
-        if (std::abs(kTileSizes[i] - savedTileSize)
-            < std::abs(kTileSizes[closestLevel] - savedTileSize))
-            closestLevel = i;
-    }
-    m_tileSize = kTileSizes[closestLevel];
-    m_boardLayout->setSpacing(tileSpacingFor(m_tileSize));
-    const int boardMargin = boardMarginFor(m_tileSize);
-    m_boardLayout->setContentsMargins(boardMargin, boardMargin, boardMargin,
-                                      boardMargin);
+    // Any tile size between the limits is valid now, so a Fit or pinch value
+    // restores exactly instead of snapping to a button step.
+    m_tileSize = qBound(
+        kMinTileSize,
+        settings.value(QStringLiteral("view/tileSize"), kDefaultTileSize).toInt(),
+        kMaxTileSize);
+    m_boardView->setTileSize(m_tileSize);
     updateZoomLabel();
 
     for (int i = 0; i < m_difficulty->count(); ++i) {
@@ -536,6 +1198,56 @@ Minesweeper::Minesweeper(QWidget *parent)
     }
 
     newGame();
+}
+
+bool Minesweeper::handleBack()
+{
+    if (!m_activeDialog)
+        return false;
+
+    // The prompt runs a nested loop; rejecting it lets that loop finish so the
+    // rest of askCustomGame() unwinds normally.
+    m_activeDialog->reject();
+    return true;
+}
+
+void Minesweeper::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+
+    if (m_resumeTimer && !m_gameOver) {
+        m_timer->start();
+    }
+    m_resumeTimer = false;
+}
+
+void Minesweeper::hideEvent(QHideEvent *event)
+{
+    // Leaving the app for the launcher must not keep the clock running, and a
+    // game that has not started yet still counts as paused when it resumes.
+    if (m_timer->isActive()) {
+        m_timer->stop();
+        m_resumeTimer = true;
+    }
+
+    QWidget::hideEvent(event);
+}
+
+void Minesweeper::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+
+    if (!m_fitMode || m_fitPending)
+        return;
+
+    // The scroll area's viewport may not have taken its new size yet, so fit
+    // once the resize has settled instead of measuring stale geometry.
+    m_fitPending = true;
+    QTimer::singleShot(0, this, [this] {
+        m_fitPending = false;
+        if (m_fitMode)
+            fitBoard();
+    });
 }
 
 void Minesweeper::newGame()
@@ -569,60 +1281,10 @@ void Minesweeper::newGame()
 
 void Minesweeper::buildBoard()
 {
-    // Rebuilding a visible board makes QGridLayout relayout on every added
-    // tile. On the 100x100 Insane board that takes seconds, so keep the board
-    // hidden until the new grid is complete.
-    m_board->hide();
-
-    while (m_boardLayout->count() > 0) {
-        QLayoutItem *item = m_boardLayout->takeAt(0);
-        delete item->widget();
-        delete item;
-    }
-
-    m_buttons.clear();
-    m_buttons.resize(m_rows * m_columns);
     m_cells.clear();
     m_cells.resize(m_rows * m_columns);
-
-    // Match the board to the opened-tile colour so a revealed area reads as
-    // one flat surface.
-    QPalette boardPalette = m_board->palette();
-    boardPalette.setColor(QPalette::Base, tilePalette().open);
-    m_board->setPalette(boardPalette);
-
-    m_boardLayout->setSpacing(tileSpacingFor(m_tileSize));
-    const int boardMargin = boardMarginFor(m_tileSize);
-    m_boardLayout->setContentsMargins(boardMargin, boardMargin, boardMargin,
-                                      boardMargin);
-
-    for (int row = 0; row < m_rows; ++row) {
-        for (int column = 0; column < m_columns; ++column) {
-            const int index = row * m_columns + column;
-            auto *button = new QPushButton(m_board);
-            applyTileMetrics(button);
-            button->setProperty("index", index);
-            button->installEventFilter(this);
-#ifdef Q_OS_ANDROID
-            // Same reasoning as the main grid: touch devices have no keyboard,
-            // so keep the tiles out of the focus chain.
-            button->setFocusPolicy(Qt::NoFocus);
-#endif
-            connect(button, &QPushButton::clicked,
-                    this, [this, index] { onButtonClicked(index); });
-            m_buttons[index] = button;
-            m_boardLayout->addWidget(button, row, column);
-            // Children created after the board is already visible start out
-            // hidden. Without this, the layout's size hint is just the margins
-            // and the board collapses to a few pixels on New/difficulty change.
-            button->show();
-        }
-    }
-
-    m_board->adjustSize();
-    for (int i = 0; i < m_cells.size(); ++i)
-        updateButton(i);
-    m_board->show();
+    m_boardView->setCells(&m_cells);
+    m_boardView->setGrid(m_rows, m_columns, m_tileSize);
     updateZoomLabel();
 }
 
@@ -701,6 +1363,20 @@ void Minesweeper::onButtonClicked(int index)
     reveal(index);
 }
 
+void Minesweeper::onCellRightClicked(int index)
+{
+    if (m_gameOver || index < 0 || index >= m_cells.size())
+        return;
+
+    const Cell &cell = m_cells.at(index);
+    // On an opened number the right button chords, just like a regular click.
+    // On an unopened tile it still flags.
+    if (cell.revealed && !cell.mine && cell.adjacent > 0)
+        revealNeighbours(index);
+    else
+        toggleFlag(index);
+}
+
 void Minesweeper::reveal(int index)
 {
     if (index < 0 || index >= m_cells.size())
@@ -719,7 +1395,6 @@ void Minesweeper::reveal(int index)
             continue;
 
         cell.revealed = true;
-        updateButton(current);
 
         if (cell.adjacent != 0)
             continue;
@@ -742,6 +1417,7 @@ void Minesweeper::reveal(int index)
         }
     }
 
+    refreshBoard();
     checkWin();
 }
 
@@ -800,7 +1476,7 @@ void Minesweeper::toggleFlag(int index)
 
     cell.flagged = !cell.flagged;
     m_flagCount += cell.flagged ? 1 : -1;
-    updateButton(index);
+    refreshBoard();
     updateCounters();
 }
 
@@ -827,7 +1503,6 @@ void Minesweeper::finish(bool won)
             if (m_cells.at(i).mine && !m_cells.at(i).flagged) {
                 m_cells[i].flagged = true;
                 ++m_flagCount;
-                updateButton(i);
             }
         }
 
@@ -854,8 +1529,6 @@ void Minesweeper::finish(bool won)
                                    formatTime(m_bestTimes.value(difficulty))));
             }
         }
-        // Refresh the counters so the new record shows up next to the clock.
-        updateCounters();
     } else {
         for (int i = 0; i < m_cells.size(); ++i) {
             Cell &cell = m_cells[i];
@@ -863,60 +1536,17 @@ void Minesweeper::finish(bool won)
                 cell.revealed = true;
             else if (!cell.mine && cell.flagged)
                 cell.wrong = true;
-            updateButton(i);
         }
         setStatus(tr("Boom! Game over. Press New to try again."));
     }
 
+    refreshBoard();
     updateCounters();
 }
 
-void Minesweeper::updateButton(int index)
+void Minesweeper::refreshBoard()
 {
-    QPushButton *button = m_buttons.value(index);
-    if (!button)
-        return;
-
-    const bool dark = isDarkTheme();
-    const Cell &cell = m_cells.at(index);
-    if (cell.wrong) {
-        button->setText(QStringLiteral("\u00d7"));
-        button->setIcon(QIcon());
-        button->setEnabled(false);
-        button->setStyleSheet(revealedTileStyle(warningColor().name(),
-                                                QStringLiteral("rgba(245, 124, 0, 60)"),
-                                                warningColor().name()));
-        return;
-    }
-
-    if (!cell.revealed) {
-        button->setText(QString());
-        button->setIcon(cell.flagged ? AppIcons::flag(dark) : QIcon());
-        button->setEnabled(!m_gameOver || cell.flagged);
-        button->setStyleSheet(hiddenTileStyle(cell.flagged));
-        return;
-    }
-
-    if (cell.mine) {
-        button->setEnabled(false);
-        button->setText(QString());
-        button->setIcon(AppIcons::mine(dark));
-        button->setStyleSheet(revealedTileStyle(numberColor(3).name(),
-                                                QStringLiteral("rgba(211, 47, 47, 70)"),
-                                                numberColor(3).name()));
-    } else if (cell.adjacent > 0) {
-        // Opened numbers stay enabled: Qt does not deliver clicks to disabled
-        // widgets, and a click on the digit has to reach us to chord.
-        button->setEnabled(true);
-        button->setText(QString::number(cell.adjacent));
-        button->setIcon(QIcon());
-        button->setStyleSheet(revealedTileStyle(numberColor(cell.adjacent).name()));
-    } else {
-        button->setEnabled(true);
-        button->setText(QString());
-        button->setIcon(QIcon());
-        button->setStyleSheet(revealedTileStyle(tilePalette().text.name()));
-    }
+    m_boardView->update();
 }
 
 void Minesweeper::updateCounters()
@@ -946,71 +1576,58 @@ void Minesweeper::setStatus(const QString &text)
 
 void Minesweeper::setTileSize(int size)
 {
-    m_tileSize = qBound(kMinTileSize, size, kMaxTileSize);
-
-    m_boardLayout->setSpacing(tileSpacingFor(m_tileSize));
-    const int boardMargin = boardMarginFor(m_tileSize);
-    m_boardLayout->setContentsMargins(boardMargin, boardMargin, boardMargin,
-                                      boardMargin);
-
-    for (QPushButton *button : m_buttons)
-        applyTileMetrics(button);
-    m_board->adjustSize();
-    updateZoomLabel();
-
-    QSettings settings;
-    settings.setValue(QStringLiteral("view/tileSize"), m_tileSize);
-}
-
-void Minesweeper::applyTileMetrics(QPushButton *button) const
-{
-    button->setFixedSize(m_tileSize, m_tileSize);
-
-    const int iconSize = qMax(10, qRound(m_tileSize * 0.62));
-    button->setIconSize(QSize(iconSize, iconSize));
-
-    QFont tileFont = button->font();
-    tileFont.setPixelSize(qMax(8, qRound(m_tileSize * 0.52)));
-    tileFont.setBold(true);
-    button->setFont(tileFont);
-}
-
-void Minesweeper::updateZoomLabel()
-{
-    m_zoomReset->setText(
-        tr("%1%").arg(qRound(100.0 * m_tileSize / kDefaultTileSize)));
-}
-
-void Minesweeper::zoomTo(int level)
-{
-    level = qBound(0, level, kTileSizeCount - 1);
-    if (kTileSizes[level] == m_tileSize)
+    const int bounded = qBound(kMinTileSize, size, kMaxTileSize);
+    if (bounded == m_tileSize && m_boardView->tileSize() == bounded) {
+        updateZoomLabel();
         return;
+    }
 
-    // Keep the point under the centre of the viewport while the tiles grow or
-    // shrink, so zooming does not lose the player's place on a big board.
-    const int viewWidth = m_scroll->viewport()->width();
-    const int viewHeight = m_scroll->viewport()->height();
-    const double centerX =
-        (m_scroll->horizontalScrollBar()->value() + viewWidth / 2.0)
-        / qMax(1, m_board->width());
-    const double centerY =
-        (m_scroll->verticalScrollBar()->value() + viewHeight / 2.0)
-        / qMax(1, m_board->height());
+    m_tileSize = bounded;
+    m_boardView->setTileSize(bounded);
+    updateZoomLabel();
+}
 
-    setTileSize(kTileSizes[level]);
+void Minesweeper::zoomToAnchor(int size, const QPoint &anchor, bool persist)
+{
+    const int target = qBound(kMinTileSize, size, kMaxTileSize);
+    const QSize oldDocument = m_boardView->size();
+    const QPoint oldScroll(m_scroll->horizontalScrollBar()->value(),
+                           m_scroll->verticalScrollBar()->value());
+    const QPoint viewportPoint = anchor - oldScroll;
 
-    m_scroll->horizontalScrollBar()->setValue(
-        qRound(centerX * m_board->width() - viewWidth / 2.0));
-    m_scroll->verticalScrollBar()->setValue(
-        qRound(centerY * m_board->height() - viewHeight / 2.0));
+    setTileSize(target);
+
+    // Map the anchor through the size change so the spot under the fingers (or
+    // under the viewport centre for the buttons) stays put.
+    const QSize newDocument = m_boardView->size();
+    const qreal xRatio = oldDocument.width() > 0
+                             ? qreal(anchor.x()) / oldDocument.width()
+                             : 0.5;
+    const qreal yRatio = oldDocument.height() > 0
+                             ? qreal(anchor.y()) / oldDocument.height()
+                             : 0.5;
+    const QPoint newAnchor(qRound(xRatio * newDocument.width()),
+                           qRound(yRatio * newDocument.height()));
+
+    m_scroll->horizontalScrollBar()->setValue(newAnchor.x() - viewportPoint.x());
+    m_scroll->verticalScrollBar()->setValue(newAnchor.y() - viewportPoint.y());
+
+    if (persist)
+        saveZoom();
+}
+
+void Minesweeper::zoomBoardAt(int size, const QPoint &anchor)
+{
+    m_fitMode = false;
+    zoomToAnchor(size, anchor, false);
 }
 
 void Minesweeper::zoomIn()
 {
     for (int i = 0; i < kTileSizeCount; ++i) {
         if (kTileSizes[i] > m_tileSize) {
-            zoomTo(i);
+            m_fitMode = false;
+            zoomToAnchor(kTileSizes[i], viewportCenterInBoard(), true);
             return;
         }
     }
@@ -1020,7 +1637,8 @@ void Minesweeper::zoomOut()
 {
     for (int i = kTileSizeCount - 1; i >= 0; --i) {
         if (kTileSizes[i] < m_tileSize) {
-            zoomTo(i);
+            m_fitMode = false;
+            zoomToAnchor(kTileSizes[i], viewportCenterInBoard(), true);
             return;
         }
     }
@@ -1028,32 +1646,62 @@ void Minesweeper::zoomOut()
 
 void Minesweeper::resetZoom()
 {
-    for (int i = 0; i < kTileSizeCount; ++i) {
-        if (kTileSizes[i] == kDefaultTileSize) {
-            zoomTo(i);
-            return;
-        }
-    }
+    m_fitMode = false;
+    zoomToAnchor(kDefaultTileSize, viewportCenterInBoard(), true);
 }
 
 void Minesweeper::fitBoard()
 {
-    // Pick the largest level whose board, including its spacing and margins,
-    // fits the visible part of the scroll area.
     const QSize available = m_scroll->viewport()->size();
-    int best = 0;
-    for (int i = 0; i < kTileSizeCount; ++i) {
-        const int size = kTileSizes[i];
-        const int spacing = tileSpacingFor(size);
-        const int margin = boardMarginFor(size);
-        const int width =
-            m_columns * size + (m_columns - 1) * spacing + 2 * margin;
-        const int height =
-            m_rows * size + (m_rows - 1) * spacing + 2 * margin;
-        if (width <= available.width() && height <= available.height())
-            best = i;
+    if (available.width() <= 0 || available.height() <= 0)
+        return;
+
+    // Search downwards from the largest tile so Fit is a true whole-board
+    // view, even on the 100x100 Insane board.
+    int chosen = kMinTileSize;
+    for (int size = kMaxTileSize; size >= kMinTileSize; --size) {
+        const QSize document =
+            MinesweeperBoard::documentSize(m_rows, m_columns, size);
+        if (document.width() <= available.width()
+            && document.height() <= available.height()) {
+            chosen = size;
+            break;
+        }
     }
-    zoomTo(best);
+
+    // Keep re-fitting when the window is resized or the phone is rotated,
+    // until the player zooms by hand again.
+    m_fitMode = true;
+    zoomToAnchor(chosen, viewportCenterInBoard(), true);
+}
+
+void Minesweeper::panBoard(const QPoint &delta)
+{
+    // Dragging right moves the board right, which means scrolling left.
+    m_scroll->horizontalScrollBar()->setValue(
+        m_scroll->horizontalScrollBar()->value() - delta.x());
+    m_scroll->verticalScrollBar()->setValue(
+        m_scroll->verticalScrollBar()->value() - delta.y());
+}
+
+void Minesweeper::saveZoom()
+{
+    QSettings settings;
+    settings.setValue(QStringLiteral("view/tileSize"), m_tileSize);
+}
+
+void Minesweeper::updateZoomLabel()
+{
+    m_zoomReset->setText(
+        tr("%1%").arg(qRound(100.0 * m_tileSize / kDefaultTileSize)));
+}
+
+QPoint Minesweeper::viewportCenterInBoard() const
+{
+    return QPoint(m_scroll->horizontalScrollBar()->value()
+                      + m_scroll->viewport()->width() / 2,
+                  m_scroll->verticalScrollBar()->value()
+                      + m_scroll->viewport()->height() / 2);
 }
 
 void Minesweeper::tick()
@@ -1164,6 +1812,7 @@ bool Minesweeper::askCustomGame()
         loop.quit();
     });
     connect(&dialog, &QDialog::rejected, &loop, &QEventLoop::quit);
+    m_activeDialog = &dialog;
     dialog.show();
     dialog.raise();
 #ifndef Q_OS_ANDROID
@@ -1171,6 +1820,7 @@ bool Minesweeper::askCustomGame()
     rows->setFocus();
 #endif
     loop.exec();
+    m_activeDialog = nullptr;
 
     if (!accepted)
         return false;
@@ -1189,31 +1839,4 @@ bool Minesweeper::askCustomGame()
 void Minesweeper::toggleFlagMode(bool enabled)
 {
     m_flagMode->setText(enabled ? tr("Flag: on") : tr("Flag: off"));
-}
-
-bool Minesweeper::eventFilter(QObject *watched, QEvent *event)
-{
-    if (event->type() == QEvent::MouseButtonPress) {
-        auto *mouse = static_cast<QMouseEvent *>(event);
-        if (mouse->button() == Qt::RightButton) {
-            if (auto *button = qobject_cast<QPushButton *>(watched)) {
-                const QVariant index = button->property("index");
-                if (index.isValid()) {
-                    const int cellIndex = index.toInt();
-                    if (cellIndex < 0 || cellIndex >= m_cells.size())
-                        return false;
-                    const Cell &cell = m_cells.at(cellIndex);
-                    // On an opened number the right button chords, just like a
-                    // regular click. On an unopened tile it still flags.
-                    if (cell.revealed && !cell.mine && cell.adjacent > 0)
-                        revealNeighbours(cellIndex);
-                    else
-                        toggleFlag(cellIndex);
-                    return true;
-                }
-            }
-        }
-    }
-
-    return QWidget::eventFilter(watched, event);
 }
