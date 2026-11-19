@@ -3,6 +3,7 @@
 
 #include <QList>
 #include <QMainWindow>
+#include <QString>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -29,9 +30,11 @@ private slots:
     void openMiniApp(int number);
     void goBack();
     void showMenu();
+    void filterApps(const QString &text);
 
 private:
     void populateGrid();
+    QList<CellWidget *> visibleCells() const;
     void layoutCells();
     void setupNavigation();
     void showAppWidget(QWidget *widget);

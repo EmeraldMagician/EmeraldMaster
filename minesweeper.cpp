@@ -819,6 +819,18 @@ void MinesweeperBoard::mouseReleaseEvent(QMouseEvent *event)
 
 void MinesweeperBoard::wheelEvent(QWheelEvent *event)
 {
+    if (event->modifiers() & Qt::AltModifier) {
+        // Alt + wheel pans horizontally. QScrollArea only reacts to vertical
+        // wheel deltas itself, so feed the delta through the drag-to-pan path.
+        const QPoint delta = event->angleDelta();
+        const int horizontal = delta.x() != 0 ? delta.x() : delta.y();
+        if (horizontal != 0) {
+            emit panRequested(QPoint(horizontal, 0));
+            event->accept();
+            return;
+        }
+    }
+
     if (!(event->modifiers() & Qt::ControlModifier)) {
         // Let the scroll area handle ordinary wheel scrolling.
         event->ignore();
@@ -1111,6 +1123,13 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_scroll->setWidgetResizable(false);
     m_scroll->setAlignment(Qt::AlignCenter);
+#ifdef Q_OS_ANDROID
+    // Touch panning already moves the board. Visible bars only invite a stray
+    // tap that jumps to a random part of the field, so hide them while leaving
+    // the scroll bars themselves active for the pan/zoom code.
+    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+#endif
     m_boardView = new MinesweeperBoard(m_scroll);
     m_boardView->setCells(&m_cells);
     m_scroll->setWidget(m_boardView);

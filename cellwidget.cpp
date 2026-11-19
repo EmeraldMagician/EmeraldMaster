@@ -1,6 +1,7 @@
 #include "cellwidget.h"
 
 #include <QApplication>
+#include <QFont>
 #include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
@@ -25,7 +26,6 @@ CellWidget::CellWidget(int number, QWidget *parent)
     // without a scrollbar stealing the width the second column needs.
     setMinimumSize(150, 100);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    setToolTip(tr("Mini app %1").arg(m_number));
     QString style = QStringLiteral(
         "CellWidget {"
         "  background-color: palette(base);"
@@ -52,14 +52,17 @@ CellWidget::CellWidget(int number, QWidget *parent)
     m_numberLabel->setFont(numberFont);
     m_numberLabel->setAlignment(Qt::AlignCenter);
 
-    m_hintLabel = new QLabel(tr("Click me"), this);
-    m_hintLabel->setAlignment(Qt::AlignCenter);
-    m_hintLabel->setForegroundRole(QPalette::PlaceholderText);
+    m_titleLabel = new QLabel(this);
+    m_titleLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+    m_titleLabel->setWordWrap(true);
+    QFont titleFont = m_titleLabel->font();
+    titleFont.setPointSize(11);
+    m_titleLabel->setFont(titleFont);
 
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(8, 8, 8, 8);
     m_layout->addWidget(m_numberLabel, 1);
-    m_layout->addWidget(m_hintLabel);
+    m_layout->addWidget(m_titleLabel);
 }
 
 void CellWidget::setIcon(const QIcon &icon)
@@ -71,7 +74,8 @@ void CellWidget::setIcon(const QIcon &icon)
 
 void CellWidget::setTitle(const QString &title)
 {
-    m_hintLabel->setText(title);
+    m_name = title;
+    m_titleLabel->setText(title);
     setToolTip(title);
 }
 
@@ -90,7 +94,7 @@ void CellWidget::setContentWidget(QWidget *widget)
         return;
 
     m_numberLabel->hide();
-    m_hintLabel->hide();
+    m_titleLabel->hide();
 
     m_content = widget;
     m_content->setParent(this);

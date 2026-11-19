@@ -64,6 +64,13 @@ set_target_properties(EmeraldMaster PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
 
+if(UNIX AND NOT APPLE AND NOT ANDROID)
+    # CMake strips the build-tree RPATH on install. This Qt kit lives outside
+    # the system library paths, so keep the linked library directories in the
+    # installed binary; otherwise the desktop entry cannot start it.
+    set_target_properties(EmeraldMaster PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
+endif()
+
 if(ANDROID)
     # Bump the version code for every published release so devices can update
     # in place. versionName is the human-readable version.
@@ -73,6 +80,45 @@ if(ANDROID)
 endif()
 
 include(GNUInstallDirs)
+
+# Linux desktop integration. Platform-guarded so a future Windows packaging
+# target can keep using the same install(TARGETS) rules unchanged.
+if(UNIX AND NOT APPLE)
+    set(EMERALDMASTER_EXEC "${CMAKE_INSTALL_FULL_BINDIR}/EmeraldMaster")
+
+    # An absolute icon path bypasses the icon-theme lookups GNOME Shell caches
+    # between sessions; sized copies are still installed as a fallback.
+    set(EMERALDMASTER_ICON
+        "${CMAKE_INSTALL_FULL_DATADIR}/icons/hicolor/256x256/apps/emeraldmaster.png")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/emeraldmaster.desktop.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/emeraldmaster.desktop"
+        @ONLY
+    )
+
+    # Install the icons before the launcher so it never exists without one.
+    foreach(size 16 24 32 48 64 128)
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/icons/emeraldmaster-${size}.png"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps"
+            RENAME emeraldmaster.png)
+    endforeach()
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/icons/emeraldmaster.png"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps"
+        RENAME emeraldmaster.png)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/emeraldmaster.desktop"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
+
+    # Refresh the caches desktop environments use to find apps and icons.
+    find_program(UPDATE_DESKTOP_DATABASE NAMES update-desktop-database)
+    if(UPDATE_DESKTOP_DATABASE)
+        install(CODE "execute_process(COMMAND \"${UPDATE_DESKTOP_DATABASE}\" \"${CMAKE_INSTALL_FULL_DATADIR}/applications\" OUTPUT_QUIET ERROR_QUIET)")
+    endif()
+    find_program(GTK_UPDATE_ICON_CACHE NAMES gtk-update-icon-cache)
+    if(GTK_UPDATE_ICON_CACHE)
+        install(CODE "execute_process(COMMAND \"${GTK_UPDATE_ICON_CACHE}\" -f -t \"${CMAKE_INSTALL_FULL_DATADIR}/icons/hicolor\" OUTPUT_QUIET ERROR_QUIET)")
+    endif()
+endif()
+
 install(TARGETS EmeraldMaster
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

@@ -4,9 +4,12 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QPointF>
+#include <QPolygonF>
 
 #include <cmath>
 #include <functional>
+#include <initializer_list>
 
 namespace {
 
@@ -132,11 +135,91 @@ QIcon makeMinesweeperIcon()
     return icon;
 }
 
+void drawLauncher(QPainter &painter)
+{
+    QLinearGradient background(0, 0, 0, 64);
+    background.setColorAt(0.0, QColor(QStringLiteral("#2e7d32")));
+    background.setColorAt(1.0, QColor(QStringLiteral("#0b3510")));
+    painter.setPen(QPen(QColor(QStringLiteral("#052009")), 2.0));
+    painter.setBrush(background);
+    painter.drawRoundedRect(QRectF(1, 1, 62, 62), 13, 13);
+
+    // Emerald vertices exactly as supplied, on a 7x5 design grid. The grid
+    // is scaled into the 64 px canvas with y pointing up, as in maths.
+    const qreal scale = 8.0;
+    const QPointF grid[] = {
+        {3, 0}, {0, 3}, {2, 3}, {4, 3},
+        {6, 3}, {1, 4}, {3, 4}, {5, 4}
+    };
+    const auto at = [&](int i) {
+        return QPointF(8.0 + grid[i].x() * scale, 48.0 - grid[i].y() * scale);
+    };
+    const QPointF culet = at(0);
+    const QPointF girdleLeft = at(1);
+    const QPointF girdleInnerLeft = at(2);
+    const QPointF girdleInnerRight = at(3);
+    const QPointF girdleRight = at(4);
+    const QPointF tableLeft = at(5);
+    const QPointF tableMid = at(6);
+    const QPointF tableRight = at(7);
+
+    painter.setPen(Qt::NoPen);
+
+    // Fill the silhouette first; antialiasing seams between the flat facets
+    // then reveal gem green instead of the dark background.
+    QPolygonF outline;
+    outline << culet << girdleRight << tableRight << tableLeft << girdleLeft;
+    painter.setBrush(QColor(QStringLiteral("#a6f2a0")));
+    painter.drawPolygon(outline);
+
+    const auto facet = [&painter](const QColor &color,
+                                  std::initializer_list<QPointF> points) {
+        QPolygonF polygon;
+        for (const QPointF &point : points)
+            polygon << point;
+        painter.setBrush(color);
+        painter.drawPolygon(polygon);
+    };
+
+    // Table strip: five facets from the flat top down to the girdle.
+    facet(QColor(QStringLiteral("#c9ffc1")),
+          {girdleLeft, girdleInnerLeft, tableLeft});
+    facet(QColor(QStringLiteral("#8fe88a")),
+          {girdleInnerLeft, tableMid, tableLeft});
+    facet(QColor(QStringLiteral("#a6f2a0")),
+          {girdleInnerLeft, girdleInnerRight, tableMid});
+    facet(QColor(QStringLiteral("#6fd66a")),
+          {girdleInnerRight, tableRight, tableMid});
+    facet(QColor(QStringLiteral("#4cbf4c")),
+          {girdleInnerRight, girdleRight, tableRight});
+
+    // Pavilion: three facets converging on the bottom point.
+    facet(QColor(QStringLiteral("#7fe07a")),
+          {culet, girdleLeft, girdleInnerLeft});
+    facet(QColor(QStringLiteral("#3aa63a")),
+          {culet, girdleInnerLeft, girdleInnerRight});
+    facet(QColor(QStringLiteral("#2c8a30")),
+          {culet, girdleInnerRight, girdleRight});
+}
+
+QIcon makeLauncherIcon()
+{
+    QIcon icon;
+    buildIcon(icon, 64.0, drawLauncher);
+    return icon;
+}
+
 } // namespace
 
 QIcon AppIcons::minesweeper()
 {
     static const QIcon icon = makeMinesweeperIcon();
+    return icon;
+}
+
+QIcon AppIcons::launcher()
+{
+    static const QIcon icon = makeLauncherIcon();
     return icon;
 }
 

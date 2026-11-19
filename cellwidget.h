@@ -11,8 +11,9 @@ class QVBoxLayout;
 /**
  * One tile of the main grid.
  *
- * Right now it only shows its number and reports clicks to the main window.
- * When a tile becomes a real mini application, hand the app's widget to
+ * It shows an app name under the icon (or under the number for placeholders)
+ * and reports clicks to the main window. When a tile becomes a real mini
+ * application, hand the app's widget to
  * setContentWidget(); the tile then hosts it instead of the placeholder text.
  */
 class CellWidget : public QFrame
@@ -24,10 +25,13 @@ public:
 
     int number() const { return m_number; }
 
+    /// The app name shown under the icon, also used for search and titles.
+    QString name() const { return m_name; }
+
     /// Shows an icon instead of the big tile number (used by real mini apps).
     void setIcon(const QIcon &icon);
 
-    /// Replaces the "Click me" hint and the tooltip with the app's name.
+    /// Sets the app name shown under the icon and in the tooltip.
     void setTitle(const QString &title);
 
     /// Replaces the placeholder content with the widget of a mini app.
@@ -44,9 +48,10 @@ protected:
 
 private:
     int m_number;
+    QString m_name;
     QPoint m_pressPosition;
     QLabel *m_numberLabel = nullptr;
-    QLabel *m_hintLabel = nullptr;
+    QLabel *m_titleLabel = nullptr;
     QWidget *m_content = nullptr;
     QVBoxLayout *m_layout = nullptr;
 };

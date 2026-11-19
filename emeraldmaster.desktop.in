@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Emerald Master
+Comment=Emerald Master mini app launcher
+Exec=@EMERALDMASTER_EXEC@
+Icon=@EMERALDMASTER_ICON@
+Terminal=false
+Categories=Game;

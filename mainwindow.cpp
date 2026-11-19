@@ -6,6 +6,7 @@
 
 #include <QEvent>
 #include <QLayoutItem>
+#include <QLineEdit>
 #include <QShortcut>
 #include <QStyle>
 
@@ -37,6 +38,7 @@ MainWindow::MainWindow(QWidget *parent)
 #endif
 
     populateGrid();
+    connect(ui->searchEdit, &QLineEdit::textChanged, this, &MainWindow::filterApps);
     setupNavigation();
 
     ui->stackedWidget->setCurrentWidget(ui->gridPage);
@@ -59,25 +61,68 @@ void MainWindow::populateGrid()
 {
     for (int i = 0; i < CellCount; ++i) {
         auto *cell = new CellWidget(i + 1, ui->scrollAreaWidgetContents);
-        if (i == 0) {
+        if (i == 0)
             cell->setIcon(AppIcons::minesweeper());
-            cell->setTitle(tr("Minesweeper"));
-        }
+
+        // Placeholder tiles keep their bare number as the name for now: it
+        // is enough to tell them apart in the grid and in search results.
+        cell->setTitle(i == 0 ? tr("Minesweeper") : QString::number(i + 1));
         connect(cell, &CellWidget::clicked, this, &MainWindow::openMiniApp);
         m_cells.append(cell);
     }
 }
 
+QList<CellWidget *> MainWindow::visibleCells() const
+{
+    QList<CellWidget *> result;
+    for (CellWidget *cell : m_cells) {
+        if (!cell->isHidden())
+            result.append(cell);
+    }
+    return result;
+}
+
+void MainWindow::filterApps(const QString &text)
+{
+    bool anyMatch = false;
+    for (CellWidget *cell : m_cells) {
+        const bool matches = cell->name().contains(text, Qt::CaseInsensitive);
+        cell->setVisible(matches);
+        anyMatch |= matches;
+    }
+
+    ui->noResultsLabel->setVisible(!anyMatch);
+
+    // The column count alone no longer describes the arrangement: the same
+    // number of columns can now hold a different set of tiles, so force a
+    // rebuild even when the width has not changed.
+    m_columns = -1;
+    layoutCells();
+}
+
 void MainWindow::layoutCells()
 {
-    if (m_cells.isEmpty())
+    const QList<CellWidget *> visible = visibleCells();
+    if (visible.isEmpty()) {
+        if (m_columns == 0)
+            return;
+
+        // Still tear down the old arrangement when a search matches nothing.
+        while (QLayoutItem *item = ui->gridLayout->takeAt(0))
+            delete item;
+        for (int column = 0; column < MaxGridColumns; ++column)
+            ui->gridLayout->setColumnStretch(column, 0);
+        for (int row = 0; row < CellCount; ++row)
+            ui->gridLayout->setRowStretch(row, 0);
+        m_columns = 0;
         return;
+    }
 
     const QSize viewport = ui->scrollArea->viewport()->size();
     const QMargins margins = ui->gridLayout->contentsMargins();
     const int horizontalSpacing = ui->gridLayout->horizontalSpacing();
-    const QSize minCell = m_cells.first()->minimumSize();
-    const int count = m_cells.size();
+    const QSize minCell = visible.first()->minimumSize();
+    const int count = visible.size();
 
     // Fit as many columns as the current viewport allows, never more than
     // MaxGridColumns. On a desktop window this is MaxGridColumns.
@@ -101,11 +146,11 @@ void MainWindow::layoutCells()
     // column left over from a wider arrangement would keep taking space.
     for (int column = 0; column < MaxGridColumns; ++column)
         ui->gridLayout->setColumnStretch(column, 0);
-    for (int row = 0; row < count; ++row)
+    for (int row = 0; row < CellCount; ++row)
         ui->gridLayout->setRowStretch(row, 0);
 
     for (int i = 0; i < count; ++i)
-        ui->gridLayout->addWidget(m_cells.at(i), i / columns, i % columns);
+        ui->gridLayout->addWidget(visible.at(i), i / columns, i % columns);
 
     // Let the tiles share the whole viewport, so the grid only scrolls
     // once the window becomes smaller than the tiles' minimum sizes.
@@ -197,18 +242,17 @@ void MainWindow::openMiniApp(int number)
     // showMenu() uses it to restore focus to the tile that was opened.
     m_activeNumber = number;
     ui->appLabel->setText(QString::number(number));
+    ui->appTitleLabel->setText(m_cells.at(number - 1)->name());
 
     switch (number) {
     case 1:
         if (!m_minesweeper)
             m_minesweeper = new Minesweeper(ui->appContent);
         showAppWidget(m_minesweeper);
-        ui->appTitleLabel->setText(tr("Minesweeper"));
         break;
     default:
         // Placeholder for the mini apps that are not written yet.
         showAppWidget(nullptr);
-        ui->appTitleLabel->setText(tr("Mini app %1").arg(number));
         break;
     }
 
@@ -234,7 +278,8 @@ void MainWindow::showMenu()
     // no keyboard, and focusing tiles leaves another tile highlighted when
     // the stacked widget shows the grid again.
     const int index = m_activeNumber - 1;
-    if (CellWidget *cell = m_cells.value(index))
+    CellWidget *cell = m_cells.value(index);
+    if (cell && !cell->isHidden())
         cell->setFocus(Qt::OtherFocusReason);
 #endif
 }

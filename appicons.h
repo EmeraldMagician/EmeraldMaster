@@ -9,6 +9,9 @@ namespace AppIcons
 /// Icon for the Minesweeper tile on the main grid.
 QIcon minesweeper();
 
+/// Icon for the launcher window and the desktop entry.
+QIcon launcher();
+
 /// A flag marker, coloured for a light or dark tile.
 QIcon flag(bool dark);
 
