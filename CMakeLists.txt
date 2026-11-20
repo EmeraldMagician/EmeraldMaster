@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(EmeraldMaster VERSION 0.5.0 LANGUAGES CXX)
+project(EmeraldMaster VERSION 0.5.1 LANGUAGES CXX)
 
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
@@ -77,8 +77,8 @@ if(ANDROID)
     set_target_properties(EmeraldMaster PROPERTIES
         QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
         QT_ANDROID_APP_ICON "@mipmap/ic_launcher"
-        QT_ANDROID_VERSION_CODE 7
-        QT_ANDROID_VERSION_NAME "0.5.0")
+        QT_ANDROID_VERSION_CODE 8
+        QT_ANDROID_VERSION_NAME "0.5.1")
 endif()
 
 include(GNUInstallDirs)
