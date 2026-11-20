@@ -75,6 +75,8 @@ if(ANDROID)
     # Bump the version code for every published release so devices can update
     # in place. versionName is the human-readable version.
     set_target_properties(EmeraldMaster PROPERTIES
+        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
+        QT_ANDROID_APP_ICON "@mipmap/ic_launcher"
         QT_ANDROID_VERSION_CODE 7
         QT_ANDROID_VERSION_NAME "0.5.0")
 endif()

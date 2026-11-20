@@ -135,15 +135,24 @@ QIcon makeMinesweeperIcon()
     return icon;
 }
 
-void drawLauncher(QPainter &painter)
+// The gradient and silhouette are shared by every platform icon. Android uses
+// the round cut so its adaptive mask does not have to crop a rounded square.
+void drawLauncherBackground(QPainter &painter, bool round)
 {
     QLinearGradient background(0, 0, 0, 64);
     background.setColorAt(0.0, QColor(QStringLiteral("#2e7d32")));
     background.setColorAt(1.0, QColor(QStringLiteral("#0b3510")));
     painter.setPen(QPen(QColor(QStringLiteral("#052009")), 2.0));
     painter.setBrush(background);
-    painter.drawRoundedRect(QRectF(1, 1, 62, 62), 13, 13);
+    const QRectF shape(1, 1, 62, 62);
+    if (round)
+        painter.drawEllipse(shape);
+    else
+        painter.drawRoundedRect(shape, 13, 13);
+}
 
+void drawLauncherGem(QPainter &painter)
+{
     // Emerald vertices exactly as supplied, on a 7x5 design grid. The grid
     // is scaled into the 64 px canvas with y pointing up, as in maths.
     const qreal scale = 8.0;
@@ -200,6 +209,12 @@ void drawLauncher(QPainter &painter)
           {culet, girdleInnerLeft, girdleInnerRight});
     facet(QColor(QStringLiteral("#2c8a30")),
           {culet, girdleInnerRight, girdleRight});
+}
+
+void drawLauncher(QPainter &painter)
+{
+    drawLauncherBackground(painter, false);
+    drawLauncherGem(painter);
 }
 
 QIcon makeLauncherIcon()
