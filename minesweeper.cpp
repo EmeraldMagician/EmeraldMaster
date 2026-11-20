@@ -67,7 +67,9 @@ constexpr int kMaxCustomSize = 100;
 // smaller (down to a true whole-board overview) and larger (for small boards
 // on a high-density screen). Fit and pinch zoom can select sizes between the
 // listed steps as well.
-constexpr int kDefaultTileSize = 32;
+// 41 px is the new 100%: zoom label, Reset and Fit all use this as their
+// baseline. Zooming can still go above it up to kMaxTileSize.
+constexpr int kDefaultTileSize = 41;
 constexpr int kMinTileSize = 2;
 constexpr int kMaxTileSize = 64;
 constexpr int kTileSizes[] = {2, 3, 4, 5, 6, 8, 10, 12,
@@ -1675,10 +1677,11 @@ void Minesweeper::fitBoard()
     if (available.width() <= 0 || available.height() <= 0)
         return;
 
-    // Search downwards from the largest tile so Fit is a true whole-board
-    // view, even on the 100x100 Insane board.
+    // Search downwards from the 100% size, so Fit lands on 41 px whenever the
+    // board fits there and never enlarges a small board past the baseline.
+    // Big boards still shrink all the way down for a true overview.
     int chosen = kMinTileSize;
-    for (int size = kMaxTileSize; size >= kMinTileSize; --size) {
+    for (int size = kDefaultTileSize; size >= kMinTileSize; --size) {
         const QSize document =
             MinesweeperBoard::documentSize(m_rows, m_columns, size);
         if (document.width() <= available.width()
