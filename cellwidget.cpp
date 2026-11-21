@@ -21,10 +21,10 @@ CellWidget::CellWidget(int number, QWidget *parent)
 #else
     setFocusPolicy(Qt::StrongFocus);
 #endif
-    // Small enough that two tiles fit side by side on a phone screen, and
-    // short enough that five rows of tiles still fit a 360x640 viewport
-    // without a scrollbar stealing the width the second column needs.
-    setMinimumSize(150, 100);
+    // The launcher uses fixed 150x150 squares; the grid stretches the columns
+    // around them to fill the row. Keep the same floor here for the initial
+    // layout, where two tiles still fit side by side on a phone screen.
+    setMinimumSize(150, 150);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     QString style = QStringLiteral(
         "CellWidget {"

@@ -4,10 +4,13 @@
 #include "minesweeper.h"
 #include "./ui_mainwindow.h"
 
+#include <QColor>
 #include <QEvent>
 #include <QLayoutItem>
 #include <QLineEdit>
+#include <QPalette>
 #include <QShortcut>
+#include <QSpacerItem>
 #include <QStyle>
 
 #ifdef Q_OS_ANDROID
@@ -15,12 +18,13 @@
 #endif
 
 namespace {
-// Maximum number of tiles per row. Narrower windows use fewer columns so the
-// grid still fits, e.g. two on a phone instead of a sideways scrollbar.
-constexpr int MaxGridColumns = 3;
-
 // Keep in sync with the actual grid contents.
 constexpr int CellCount = 10;
+
+// Fixed side of every launcher tile. Columns stretch to fill the row, but the
+// tiles themselves do not: every result stays the same square size whether the
+// grid is full, filtered, or showing just one match.
+constexpr int CellSide = 150;
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -28,6 +32,15 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+
+    // Android's style gives placeholder text a much darker color than the
+    // desktop style. Make the hint grey everywhere so "Search apps..." stays
+    // visibly a hint rather than looking like typed text.
+#if QT_VERSION >= QT_VERSION_CHECK(5, 12, 0)
+    QPalette searchPalette = ui->searchEdit->palette();
+    searchPalette.setColor(QPalette::PlaceholderText, QColor(128, 128, 128));
+    ui->searchEdit->setPalette(searchPalette);
+#endif
 
 #ifdef Q_OS_ANDROID
     // Phones use the system Back gesture/key instead; an on-screen Menu
@@ -92,74 +105,73 @@ void MainWindow::filterApps(const QString &text)
     }
 
     ui->noResultsLabel->setVisible(!anyMatch);
-
-    // The column count alone no longer describes the arrangement: the same
-    // number of columns can now hold a different set of tiles, so force a
-    // rebuild even when the width has not changed.
-    m_columns = -1;
     layoutCells();
 }
 
 void MainWindow::layoutCells()
 {
-    const QList<CellWidget *> visible = visibleCells();
-    if (visible.isEmpty()) {
-        if (m_columns == 0)
-            return;
-
-        // Still tear down the old arrangement when a search matches nothing.
-        while (QLayoutItem *item = ui->gridLayout->takeAt(0))
-            delete item;
-        for (int column = 0; column < MaxGridColumns; ++column)
-            ui->gridLayout->setColumnStretch(column, 0);
-        for (int row = 0; row < CellCount; ++row)
-            ui->gridLayout->setRowStretch(row, 0);
-        m_columns = 0;
-        return;
-    }
-
-    const QSize viewport = ui->scrollArea->viewport()->size();
-    const QMargins margins = ui->gridLayout->contentsMargins();
-    const int horizontalSpacing = ui->gridLayout->horizontalSpacing();
-    const QSize minCell = visible.first()->minimumSize();
-    const int count = visible.size();
-
-    // Fit as many columns as the current viewport allows, never more than
-    // MaxGridColumns. On a desktop window this is MaxGridColumns.
-    const int availableWidth = viewport.width() - margins.left() - margins.right();
-    const int columns = qBound(
-        1,
-        (availableWidth + horizontalSpacing)
-            / (minCell.width() + horizontalSpacing),
-        MaxGridColumns);
-
-    if (columns == m_columns)
-        return;
-    m_columns = columns;
-
     // Re-adding a widget that is still in the grid leaves the old cell behind,
     // so clear the items (not the widgets) before arranging them again.
     while (QLayoutItem *item = ui->gridLayout->takeAt(0))
         delete item;
 
-    // Stretches belong to the column index, not to the item, so an empty
-    // column left over from a wider arrangement would keep taking space.
-    for (int column = 0; column < MaxGridColumns; ++column)
+    // Stretches and minimums belong to the index, not to the item, so an empty
+    // row or column left over from a wider arrangement would keep its size.
+    // There is no fixed column cap, so clear every index a full grid can use.
+    // The extra row index is reserved for the spacer below.
+    for (int column = 0; column < CellCount; ++column) {
         ui->gridLayout->setColumnStretch(column, 0);
-    for (int row = 0; row < CellCount; ++row)
+        ui->gridLayout->setColumnMinimumWidth(column, 0);
+    }
+    for (int row = 0; row <= CellCount; ++row) {
         ui->gridLayout->setRowStretch(row, 0);
+        ui->gridLayout->setRowMinimumHeight(row, 0);
+    }
 
-    for (int i = 0; i < count; ++i)
-        ui->gridLayout->addWidget(visible.at(i), i / columns, i % columns);
+    const QList<CellWidget *> visible = visibleCells();
+    if (visible.isEmpty())
+        return;
 
-    // Let the tiles share the whole viewport, so the grid only scrolls
-    // once the window becomes smaller than the tiles' minimum sizes.
-    for (int column = 0; column < columns; ++column)
-        ui->gridLayout->setColumnStretch(column, 1);
+    const QSize viewport = ui->scrollArea->viewport()->size();
+    const QMargins margins = ui->gridLayout->contentsMargins();
+    const int horizontalSpacing = ui->gridLayout->horizontalSpacing();
+    const int count = visible.size();
+
+    // Fit as many columns as the current viewport allows, up to the number of
+    // visible tiles. There is no hard cap: a wide desktop window should use
+    // every column that fits instead of bunching tiles into three.
+    const int availableWidth = viewport.width() - margins.left() - margins.right();
+    const int columns = qMin(
+        count,
+        qMax(1,
+             (availableWidth + horizontalSpacing)
+                 / (CellSide + horizontalSpacing)));
+
+    // Keep the widget itself a fixed square. The extra width goes into the
+    // column stretches instead, so tiles are spread evenly across the row
+    // without growing or losing their square shape.
+    for (CellWidget *cell : visible)
+        cell->setFixedSize(CellSide, CellSide);
+
+    for (int i = 0; i < count; ++i) {
+        ui->gridLayout->addWidget(visible.at(i), i / columns, i % columns,
+                                  Qt::AlignLeft | Qt::AlignTop);
+    }
 
     const int rowCount = (count + columns - 1) / columns;
+    for (int column = 0; column < columns; ++column) {
+        ui->gridLayout->setColumnMinimumWidth(column, CellSide);
+        ui->gridLayout->setColumnStretch(column, 1);
+    }
     for (int row = 0; row < rowCount; ++row)
-        ui->gridLayout->setRowStretch(row, 1);
+        ui->gridLayout->setRowMinimumHeight(row, CellSide);
+
+    // A row spacer keeps the real rows pinned to the top. It does not affect
+    // horizontal sizing, so a single result still sits in the first cell.
+    ui->gridLayout->addItem(
+        new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Expanding),
+        rowCount, 0, 1, columns);
+    ui->gridLayout->setRowStretch(rowCount, 1);
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)

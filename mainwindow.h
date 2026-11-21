@@ -45,6 +45,5 @@ private:
     Minesweeper *m_minesweeper = nullptr;
     QWidget *m_activeApp = nullptr;
     int m_activeNumber = 0;
-    int m_columns = 0;
 };
 #endif // MAINWINDOW_H
