@@ -62,6 +62,7 @@ public:
 
 signals:
     void cellClicked(int index);
+    void cellLongClicked(int index);
     void cellRightClicked(int index);
     void panRequested(const QPoint &delta);
     void zoomRequested(int tileSize, const QPoint &anchor);
@@ -80,6 +81,8 @@ private:
     void handleTouch(QTouchEvent *event);
     void resetTouch();
     int cellAtPoint(const QPointF &position) const;
+    void startLongPress(int index);
+    void cancelLongPress();
 
     const QVector<MinesweeperCell> *m_cells = nullptr;
     int m_rows = 0;
@@ -101,6 +104,9 @@ private:
     qreal m_pinchStartDistance = 1.0;
     int m_pinchStartTileSize = 32;
     int m_touchCell = -1;
+
+    QTimer *m_longPressTimer = nullptr;
+    bool m_longPressTriggered = false;
 };
 
 /** A self-contained Minesweeper game, ready to be hosted by the main window. */
@@ -124,6 +130,7 @@ private slots:
     void setDifficulty(int index);
     void toggleFlagMode(bool enabled);
     void onButtonClicked(int index);
+    void onCellLongClicked(int index);
     void tick();
 
 private:
@@ -135,6 +142,8 @@ private:
 
     void buildBoard();
     void placeMines(int safeIndex);
+    void handleCellAction(int index, bool flagAction, bool allowFlaggedOpen);
+    void openCell(int index, bool clearFlag);
     void reveal(int index);
     void revealNeighbours(int index);
     void toggleFlag(int index);

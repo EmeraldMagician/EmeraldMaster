@@ -63,6 +63,9 @@ constexpr Difficulty kDifficulties[] = {
 constexpr int kCustomDifficulty = 4;
 constexpr int kMaxCustomSize = 100;
 
+// Holding a tile for half a second performs the opposite of a short click.
+constexpr int kLongPressInterval = 500;
+
 // Zoom levels. The default is a middle level, so there is room to go both
 // smaller (down to a true whole-board overview) and larger (for small boards
 // on a high-density screen). Fit and pinch zoom can select sizes between the
@@ -579,6 +582,23 @@ MinesweeperBoard::MinesweeperBoard(QWidget *parent)
     setFocusPolicy(Qt::NoFocus);
     setMouseTracking(true);
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+    m_longPressTimer = new QTimer(this);
+    m_longPressTimer->setSingleShot(true);
+    m_longPressTimer->setInterval(kLongPressInterval);
+    connect(m_longPressTimer, &QTimer::timeout, this, [this] {
+        const int index = m_pressedIndex;
+        m_longPressTimer->stop();
+        if (index < 0)
+            return;
+
+        // Consume the press so releasing the finger/mouse does not also fire
+        // the normal (short-click) action.
+        m_longPressTriggered = true;
+        m_pressedIndex = -1;
+        update(cellRect(index));
+        emit cellLongClicked(index);
+    });
 }
 
 int MinesweeperBoard::spacingFor(int tileSize)
@@ -617,6 +637,7 @@ void MinesweeperBoard::setGrid(int rows, int columns, int tileSize)
     m_hoverIndex = -1;
     m_pressedIndex = -1;
     m_dragging = false;
+    cancelLongPress();
     resetTouch();
     setFixedSize(documentSize(m_rows, m_columns, m_tileSize));
     update();
@@ -657,6 +678,20 @@ int MinesweeperBoard::cellAtPoint(const QPointF &position) const
     if (int(x) % step >= m_tileSize || int(y) % step >= m_tileSize)
         return -1;
     return row * m_columns + column;
+}
+
+void MinesweeperBoard::startLongPress(int index)
+{
+    m_longPressTimer->stop();
+    m_longPressTriggered = false;
+    if (index >= 0)
+        m_longPressTimer->start();
+}
+
+void MinesweeperBoard::cancelLongPress()
+{
+    m_longPressTimer->stop();
+    m_longPressTriggered = false;
 }
 
 QRect MinesweeperBoard::cellRect(int index) const
@@ -727,6 +762,7 @@ void MinesweeperBoard::mousePressEvent(QMouseEvent *event)
     }
 
     if (event->button() == Qt::RightButton) {
+        cancelLongPress();
         const int index = cellAtPoint(mousePosition(event));
         if (index >= 0)
             emit cellRightClicked(index);
@@ -740,11 +776,13 @@ void MinesweeperBoard::mousePressEvent(QMouseEvent *event)
         m_pressPosition = mousePosition(event);
         m_lastDragPosition = mouseGlobalPosition(event);
         m_dragging = false;
+        startLongPress(m_pressedIndex);
         update();
         event->accept();
         return;
     }
 
+    cancelLongPress();
     QWidget::mousePressEvent(event);
 }
 
@@ -758,6 +796,7 @@ void MinesweeperBoard::mouseMoveEvent(QMouseEvent *event)
     const QPoint position = mousePosition(event);
 
     if (!(event->buttons() & Qt::LeftButton)) {
+        cancelLongPress();
         const int index = cellAtPoint(position);
         if (index != m_hoverIndex) {
             if (m_hoverIndex >= 0)
@@ -775,6 +814,7 @@ void MinesweeperBoard::mouseMoveEvent(QMouseEvent *event)
         && (position - m_pressPosition).manhattanLength()
                >= QApplication::startDragDistance()) {
         m_dragging = true;
+        cancelLongPress();
         const int oldPressed = m_pressedIndex;
         m_pressedIndex = -1;
         if (oldPressed >= 0)
@@ -809,12 +849,14 @@ void MinesweeperBoard::mouseReleaseEvent(QMouseEvent *event)
 
     const int pressed = m_pressedIndex;
     const bool dragged = m_dragging;
+    const bool longPressed = m_longPressTriggered;
+    cancelLongPress();
     m_pressedIndex = -1;
     m_dragging = false;
     m_hoverIndex = cellAtPoint(mousePosition(event));
     update();
 
-    if (!dragged && pressed >= 0)
+    if (!dragged && !longPressed && pressed >= 0)
         emit cellClicked(pressed);
     event->accept();
 }
@@ -903,6 +945,7 @@ void MinesweeperBoard::handleTouch(QTouchEvent *event)
 {
     if (event->type() == QEvent::TouchCancel) {
         const bool wasPinching = m_touchPinching;
+        cancelLongPress();
         resetTouch();
         if (m_pressedIndex >= 0) {
             const int oldPressed = m_pressedIndex;
@@ -927,6 +970,7 @@ void MinesweeperBoard::handleTouch(QTouchEvent *event)
     }
 
     if (event->type() == QEvent::TouchBegin) {
+        cancelLongPress();
         m_touchMoved = false;
         m_touchPinching = false;
         m_touchCell = -1;
@@ -954,6 +998,7 @@ void MinesweeperBoard::handleTouch(QTouchEvent *event)
         } else if (m_touchCell >= 0) {
             m_pressedIndex = m_touchCell;
             m_hoverIndex = -1;
+            startLongPress(m_touchCell);
             update(cellRect(m_pressedIndex));
         }
         return;
@@ -963,7 +1008,9 @@ void MinesweeperBoard::handleTouch(QTouchEvent *event)
         if (m_touchGlobals.isEmpty()) {
             const bool wasPinching = m_touchPinching;
             const bool moved = m_touchMoved;
+            const bool longPressed = m_longPressTriggered;
             const int cell = m_touchCell;
+            cancelLongPress();
             resetTouch();
             if (m_pressedIndex >= 0) {
                 const int oldPressed = m_pressedIndex;
@@ -972,7 +1019,7 @@ void MinesweeperBoard::handleTouch(QTouchEvent *event)
             }
             if (wasPinching)
                 emit zoomGestureFinished();
-            else if (!moved && cell >= 0)
+            else if (!moved && !longPressed && cell >= 0)
                 emit cellClicked(cell);
         }
         return;
@@ -984,6 +1031,7 @@ void MinesweeperBoard::handleTouch(QTouchEvent *event)
             m_touchPinching = true;
             m_touchMoved = true;
             m_touchCell = -1;
+            cancelLongPress();
             auto it = m_touchGlobals.constBegin();
             const QPointF first = *it;
             ++it;
@@ -1031,6 +1079,7 @@ void MinesweeperBoard::handleTouch(QTouchEvent *event)
             }
             m_touchMoved = true;
             m_touchCell = -1;
+            cancelLongPress();
             if (m_pressedIndex >= 0) {
                 const int oldPressed = m_pressedIndex;
                 m_pressedIndex = -1;
@@ -1094,6 +1143,8 @@ Minesweeper::Minesweeper(QWidget *parent)
 
     m_flagMode = new QPushButton(tr("Flag: off"), this);
     m_flagMode->setCheckable(true);
+    m_flagMode->setToolTip(
+        tr("Toggle what a short click does. Long click does the opposite."));
     auto *restart = new QPushButton(tr("New"), this);
 
     controls->addWidget(m_difficulty);
@@ -1139,6 +1190,8 @@ Minesweeper::Minesweeper(QWidget *parent)
 
     connect(m_boardView, &MinesweeperBoard::cellClicked,
             this, &Minesweeper::onButtonClicked);
+    connect(m_boardView, &MinesweeperBoard::cellLongClicked,
+            this, &Minesweeper::onCellLongClicked);
     connect(m_boardView, &MinesweeperBoard::cellRightClicked,
             this, &Minesweeper::onCellRightClicked);
     connect(m_boardView, &MinesweeperBoard::panRequested,
@@ -1357,22 +1410,55 @@ void Minesweeper::placeMines(int safeIndex)
 
 void Minesweeper::onButtonClicked(int index)
 {
+    handleCellAction(index, m_flagMode->isChecked(), false);
+}
+
+void Minesweeper::onCellLongClicked(int index)
+{
+    // A long press is the inverted mode: it performs whichever action the
+    // short click is currently not set to do.
+    handleCellAction(index, !m_flagMode->isChecked(), true);
+}
+
+void Minesweeper::handleCellAction(int index, bool flagAction,
+                                   bool allowFlaggedOpen)
+{
     if (m_gameOver || index < 0 || index >= m_cells.size())
         return;
 
     // A click on an opened number clears the tiles around it (a chord) when the
     // flags there match the digit, as in the classic game. Check this before
-    // Flag mode: the flag toggle only applies to unopened tiles, so tapping a
-    // number should chord without having to turn Flag mode off first.
+    // the mode action: the flag toggle only applies to unopened tiles, so
+    // tapping a number should chord without having to turn Flag mode off.
     const Cell &cell = m_cells.at(index);
     if (cell.revealed && !cell.mine && cell.adjacent > 0) {
         revealNeighbours(index);
         return;
     }
 
-    if (m_flagMode->isChecked()) {
+    if (flagAction) {
         toggleFlag(index);
         return;
+    }
+
+    openCell(index, allowFlaggedOpen);
+}
+
+void Minesweeper::openCell(int index, bool clearFlag)
+{
+    Cell &cell = m_cells[index];
+    if (cell.revealed)
+        return;
+
+    if (cell.flagged) {
+        // A short click must never open a flagged tile. Only the inverted
+        // (long-press) action is allowed to clear the flag and open it.
+        if (!clearFlag)
+            return;
+        cell.flagged = false;
+        --m_flagCount;
+        refreshBoard();
+        updateCounters();
     }
 
     if (m_firstClick) {
@@ -1403,7 +1489,13 @@ void Minesweeper::reveal(int index)
     if (index < 0 || index >= m_cells.size())
         return;
 
-    if (m_cells.at(index).mine) {
+    // Flagged tiles are closed to every opening path, including chording and
+    // flood fill. openCell() removes the flag explicitly when it should open.
+    const Cell &cell = m_cells.at(index);
+    if (cell.flagged || cell.revealed)
+        return;
+
+    if (cell.mine) {
         finish(false);
         return;
     }
