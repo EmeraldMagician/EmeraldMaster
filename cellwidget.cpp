@@ -21,9 +21,10 @@ CellWidget::CellWidget(int number, QWidget *parent)
 #else
     setFocusPolicy(Qt::StrongFocus);
 #endif
-    // The launcher uses fixed 150x150 squares; the grid stretches the columns
-    // around them to fill the row. Keep the same floor here for the initial
-    // layout, where two tiles still fit side by side on a phone screen.
+    // The launcher uses 150 px squares as its baseline. Desktop stretches the
+    // columns around them; on phones the grid sizes columns to fill the row
+    // exactly. Keep this floor for the initial layout, where two tiles still
+    // fit side by side on a phone screen.
     setMinimumSize(150, 150);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     QString style = QStringLiteral(

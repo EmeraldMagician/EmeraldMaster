@@ -56,7 +56,7 @@ struct Difficulty
 constexpr Difficulty kDifficulties[] = {
     {9, 9, 10},
     {16, 16, 40},
-    {16, 30, 99},
+    {30, 30, 99},
     {100, 100, 2000},
 };
 

@@ -147,11 +147,23 @@ void MainWindow::layoutCells()
              (availableWidth + horizontalSpacing)
                  / (CellSide + horizontalSpacing)));
 
-    // Keep the widget itself a fixed square. The extra width goes into the
-    // column stretches instead, so tiles are spread evenly across the row
-    // without growing or losing their square shape.
+#ifdef Q_OS_ANDROID
+    // A phone usually fits only two columns, so splitting the leftover width
+    // between the column stretches made the gap look enormous. Give each
+    // column its exact share of the viewport and widen the tiles to match:
+    // the only space left between them is the layout's own spacing. Keep the
+    // original square size for a single result, where there is no gap to fix.
+    const int tileWidth = columns > 1
+        ? (availableWidth - (columns - 1) * horizontalSpacing) / columns
+        : CellSide;
+    for (CellWidget *cell : visible)
+        cell->setFixedSize(tileWidth, CellSide);
+#else
+    // On desktop the extra width goes into column stretches, so the fixed
+    // squares stay the same size while rows still fill the window.
     for (CellWidget *cell : visible)
         cell->setFixedSize(CellSide, CellSide);
+#endif
 
     for (int i = 0; i < count; ++i) {
         ui->gridLayout->addWidget(visible.at(i), i / columns, i % columns,
@@ -160,8 +172,14 @@ void MainWindow::layoutCells()
 
     const int rowCount = (count + columns - 1) / columns;
     for (int column = 0; column < columns; ++column) {
+#ifdef Q_OS_ANDROID
+        // The widths already add up to the available space; a stretch here
+        // would hand the remainder straight back to the gaps.
+        ui->gridLayout->setColumnMinimumWidth(column, tileWidth);
+#else
         ui->gridLayout->setColumnMinimumWidth(column, CellSide);
         ui->gridLayout->setColumnStretch(column, 1);
+#endif
     }
     for (int row = 0; row < rowCount; ++row)
         ui->gridLayout->setRowMinimumHeight(row, CellSide);
