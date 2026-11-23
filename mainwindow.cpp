@@ -21,9 +21,9 @@ namespace {
 // Keep in sync with the actual grid contents.
 constexpr int CellCount = 10;
 
-// Fixed side of every launcher tile. Columns stretch to fill the row, but the
-// tiles themselves do not: every result stays the same square size whether the
-// grid is full, filtered, or showing just one match.
+// Baseline tile size. Desktop keeps tiles at this exact size; Android widens
+// them to fill their column. In both cases the geometry comes from the full
+// launcher, so a tile that matches a search keeps its slot and size.
 constexpr int CellSide = 150;
 }
 
@@ -138,11 +138,13 @@ void MainWindow::layoutCells()
     const int count = visible.size();
 
     // Fit as many columns as the current viewport allows, up to the number of
-    // visible tiles. There is no hard cap: a wide desktop window should use
-    // every column that fits instead of bunching tiles into three.
+    // tiles in the launcher. There is no hard cap: a wide desktop window uses
+    // every column that fits instead of bunching tiles into three. Crucially,
+    // this does not depend on the search results: a tile that survives a
+    // search must keep the exact slot and size it had before the search.
     const int availableWidth = viewport.width() - margins.left() - margins.right();
     const int columns = qMin(
-        count,
+        CellCount,
         qMax(1,
              (availableWidth + horizontalSpacing)
                  / (CellSide + horizontalSpacing)));
@@ -151,11 +153,11 @@ void MainWindow::layoutCells()
     // A phone usually fits only two columns, so splitting the leftover width
     // between the column stretches made the gap look enormous. Give each
     // column its exact share of the viewport and widen the tiles to match:
-    // the only space left between them is the layout's own spacing. Keep the
-    // original square size for a single result, where there is no gap to fix.
-    const int tileWidth = columns > 1
-        ? (availableWidth - (columns - 1) * horizontalSpacing) / columns
-        : CellSide;
+    // the only space left between them is the layout's own spacing. This uses
+    // the full grid, so even a single result keeps that width instead of
+    // snapping back to a 150 px square.
+    const int tileWidth =
+        (availableWidth - (columns - 1) * horizontalSpacing) / columns;
     for (CellWidget *cell : visible)
         cell->setFixedSize(tileWidth, CellSide);
 #else
