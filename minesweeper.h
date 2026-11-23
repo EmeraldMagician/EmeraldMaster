@@ -1,14 +1,15 @@
 #ifndef MINESWEEPER_H
 #define MINESWEEPER_H
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QPointF>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QWidget>
 
-class QComboBox;
 class QDialog;
 class QHideEvent;
 class QLabel;
@@ -49,6 +50,7 @@ public:
     explicit MinesweeperBoard(QWidget *parent = nullptr);
 
     void setCells(const QVector<MinesweeperCell> *cells) { m_cells = cells; }
+    void setUsesDoubleClick(bool uses);
     void setGrid(int rows, int columns, int tileSize);
     void setTileSize(int tileSize);
     int tileSize() const { return m_tileSize; }
@@ -63,6 +65,7 @@ public:
 signals:
     void cellClicked(int index);
     void cellLongClicked(int index);
+    void cellDoubleClicked(int index);
     void cellRightClicked(int index);
     void panRequested(const QPoint &delta);
     void zoomRequested(int tileSize, const QPoint &anchor);
@@ -71,6 +74,7 @@ signals:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
@@ -107,6 +111,13 @@ private:
 
     QTimer *m_longPressTimer = nullptr;
     bool m_longPressTriggered = false;
+
+    // The chosen inverse gesture: long press by default, or double click.
+    // Double click is detected here so the second release can be suppressed
+    // instead of firing a second flag toggle before the open action.
+    bool m_usesDoubleClick = false;
+    int m_lastClickIndex = -1;
+    QElapsedTimer m_lastClickTime;
 };
 
 /** A self-contained Minesweeper game, ready to be hosted by the main window. */
@@ -127,11 +138,13 @@ public:
 
 private slots:
     void newGame();
-    void setDifficulty(int index);
+    void showSettings();
     void toggleFlagMode(bool enabled);
     void onButtonClicked(int index);
     void onCellLongClicked(int index);
+    void onCellDoubleClicked(int index);
     void tick();
+    void updateNewButton();
 
 private:
     using Cell = MinesweeperCell;
@@ -167,7 +180,8 @@ private:
     void updateZoomLabel();
     QPoint viewportCenterInBoard() const;
 
-    QComboBox *m_difficulty = nullptr;
+    QPushButton *m_newButton = nullptr;
+    QPushButton *m_settingsButton = nullptr;
     QLabel *m_minesLeft = nullptr;
     QLabel *m_time = nullptr;
     QLabel *m_bestTime = nullptr;
@@ -196,8 +210,15 @@ private:
     int m_customRows = 20;
     int m_customColumns = 20;
     int m_customMines = 80;
+
+    // Difficulty chosen in Settings is applied only when New is pressed. The
+    // active index describes the board currently on screen and drives best
+    // times, so changing the choice never silently replaces a game in progress.
+    int m_selectedDifficulty = 0;
+    int m_activeDifficulty = 0;
     int m_previousDifficulty = 0;
-    bool m_ignoreNextActivation = false;
+    QStringList m_difficultyNames;
+    bool m_useDoubleClick = false;
 
     // The clock pauses while the app is not on screen; reopening it must not
     // charge the player for the time spent in the launcher.

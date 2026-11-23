@@ -22,6 +22,7 @@
 #include <QPainterPath>
 #include <QPalette>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QRandomGenerator>
 #include <QResizeEvent>
 #include <QScreen>
@@ -29,7 +30,6 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QShowEvent>
-#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QStyle>
@@ -629,11 +629,21 @@ QSize MinesweeperBoard::documentSize(int rows, int columns, int tileSize)
     return QSize(qMax(1, width), qMax(1, height));
 }
 
+void MinesweeperBoard::setUsesDoubleClick(bool uses)
+{
+    m_usesDoubleClick = uses;
+    cancelLongPress();
+    m_lastClickIndex = -1;
+    m_lastClickTime.invalidate();
+}
+
 void MinesweeperBoard::setGrid(int rows, int columns, int tileSize)
 {
     m_rows = qMax(0, rows);
     m_columns = qMax(0, columns);
     m_tileSize = qBound(kMinTileSize, tileSize, kMaxTileSize);
+    m_lastClickIndex = -1;
+    m_lastClickTime.invalidate();
     m_hoverIndex = -1;
     m_pressedIndex = -1;
     m_dragging = false;
@@ -684,8 +694,9 @@ void MinesweeperBoard::startLongPress(int index)
 {
     m_longPressTimer->stop();
     m_longPressTriggered = false;
-    if (index >= 0)
-        m_longPressTimer->start();
+    if (index < 0 || m_usesDoubleClick)
+        return;
+    m_longPressTimer->start();
 }
 
 void MinesweeperBoard::cancelLongPress()
@@ -786,6 +797,24 @@ void MinesweeperBoard::mousePressEvent(QMouseEvent *event)
     QWidget::mousePressEvent(event);
 }
 
+void MinesweeperBoard::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (event->source() == Qt::MouseEventSynthesizedByQt) {
+        event->ignore();
+        return;
+    }
+
+    // Qt may deliver the second press of a double click here instead of via
+    // mousePressEvent(). Remember the cell so the matching release is seen as
+    // the double-click gesture, not a lost press.
+    m_pressedIndex = cellAtPoint(mousePosition(event));
+    m_hoverIndex = -1;
+    m_dragging = false;
+    cancelLongPress();
+    update();
+    event->accept();
+}
+
 void MinesweeperBoard::mouseMoveEvent(QMouseEvent *event)
 {
     if (event->source() == Qt::MouseEventSynthesizedByQt) {
@@ -856,8 +885,23 @@ void MinesweeperBoard::mouseReleaseEvent(QMouseEvent *event)
     m_hoverIndex = cellAtPoint(mousePosition(event));
     update();
 
-    if (!dragged && !longPressed && pressed >= 0)
+    if (dragged || longPressed || pressed < 0) {
+        m_lastClickIndex = -1;
+        m_lastClickTime.invalidate();
+    } else if (m_usesDoubleClick && pressed == m_lastClickIndex
+               && m_lastClickTime.isValid()
+               && m_lastClickTime.elapsed()
+                      <= QApplication::doubleClickInterval()) {
+        // The first click already fired. Swallow the second one so it cannot
+        // undo the flag before the double-click opens the cell.
+        m_lastClickIndex = -1;
+        m_lastClickTime.invalidate();
+        emit cellDoubleClicked(pressed);
+    } else {
         emit cellClicked(pressed);
+        m_lastClickIndex = pressed;
+        m_lastClickTime.restart();
+    }
     event->accept();
 }
 
@@ -1017,10 +1061,23 @@ void MinesweeperBoard::handleTouch(QTouchEvent *event)
                 m_pressedIndex = -1;
                 update(cellRect(oldPressed));
             }
+            if (wasPinching || moved || longPressed || cell < 0) {
+                m_lastClickIndex = -1;
+                m_lastClickTime.invalidate();
+            } else if (m_usesDoubleClick && cell == m_lastClickIndex
+                       && m_lastClickTime.isValid()
+                       && m_lastClickTime.elapsed()
+                              <= QApplication::doubleClickInterval()) {
+                m_lastClickIndex = -1;
+                m_lastClickTime.invalidate();
+                emit cellDoubleClicked(cell);
+            } else {
+                emit cellClicked(cell);
+                m_lastClickIndex = cell;
+                m_lastClickTime.restart();
+            }
             if (wasPinching)
                 emit zoomGestureFinished();
-            else if (!moved && !longPressed && cell >= 0)
-                emit cellClicked(cell);
         }
         return;
     }
@@ -1116,45 +1173,29 @@ Minesweeper::Minesweeper(QWidget *parent)
     auto *layout = new QVBoxLayout(this);
 
     auto *controls = new QHBoxLayout;
-    m_difficulty = new DifficultyComboBox(this);
-    m_difficulty->addItem(tr("Beginner"), 0);
-    m_difficulty->addItem(tr("Intermediate"), 1);
-    m_difficulty->addItem(tr("Expert"), 2);
-    m_difficulty->addItem(tr("Insane"), 3);
-    m_difficulty->addItem(tr("Custom"), kCustomDifficulty);
-    m_difficulty->view()->setItemDelegate(
-        new BestTimeDelegate(m_difficulty->view()));
-    connect(m_difficulty, &QComboBox::currentIndexChanged,
-            this, [this](int index) {
-                // A user choice emits both signals; the activated handler
-                // below only exists to reopen the prompt when the current
-                // Custom entry is picked again.
-                m_ignoreNextActivation = true;
-                setDifficulty(index);
-            });
-    connect(m_difficulty, &QComboBox::activated, this, [this](int index) {
-        if (m_ignoreNextActivation) {
-            m_ignoreNextActivation = false;
-            return;
-        }
-        if (index == kCustomDifficulty)
-            setDifficulty(index);
-    });
+    m_difficultyNames << tr("Beginner") << tr("Intermediate") << tr("Expert")
+                      << tr("Insane") << tr("Custom");
+
+    m_settingsButton = new QPushButton(tr("Settings"), this);
+    m_settingsButton->setToolTip(
+        tr("Choose the difficulty and the gesture that opens a cell "
+           "while Flag mode is on."));
 
     m_flagMode = new QPushButton(tr("Flag: off"), this);
     m_flagMode->setCheckable(true);
     m_flagMode->setToolTip(
-        tr("Toggle what a short click does. Long click does the opposite."));
-    auto *restart = new QPushButton(tr("New"), this);
+        tr("Toggle what a short click does. The chosen gesture does "
+           "the opposite."));
+    m_newButton = new QPushButton(this);
 
-    controls->addWidget(m_difficulty);
+    controls->addWidget(m_settingsButton);
     controls->addStretch(1);
     controls->addWidget(m_flagMode);
-    controls->addWidget(restart);
+    controls->addWidget(m_newButton);
     layout->addLayout(controls);
 
     // Counters get their own row so the clock and the record stay readable on
-    // a phone, where the difficulty and buttons use the full width.
+    // a phone, where the buttons already use the full width.
     auto *counters = new QHBoxLayout;
     counters->setSpacing(18);
     m_minesLeft = new QLabel(this);
@@ -1192,6 +1233,8 @@ Minesweeper::Minesweeper(QWidget *parent)
             this, &Minesweeper::onButtonClicked);
     connect(m_boardView, &MinesweeperBoard::cellLongClicked,
             this, &Minesweeper::onCellLongClicked);
+    connect(m_boardView, &MinesweeperBoard::cellDoubleClicked,
+            this, &Minesweeper::onCellDoubleClicked);
     connect(m_boardView, &MinesweeperBoard::cellRightClicked,
             this, &Minesweeper::onCellRightClicked);
     connect(m_boardView, &MinesweeperBoard::panRequested,
@@ -1236,8 +1279,10 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_timer->setInterval(1000);
     connect(m_timer, &QTimer::timeout, this, &Minesweeper::tick);
 
+    connect(m_settingsButton, &QPushButton::clicked,
+            this, &Minesweeper::showSettings);
     connect(m_flagMode, &QPushButton::toggled, this, &Minesweeper::toggleFlagMode);
-    connect(restart, &QPushButton::clicked, this, &Minesweeper::newGame);
+    connect(m_newButton, &QPushButton::clicked, this, &Minesweeper::newGame);
 
     QSettings settings;
     m_customRows = qBound(3, settings.value(QStringLiteral("custom/rows"), 20).toInt(),
@@ -1259,18 +1304,23 @@ Minesweeper::Minesweeper(QWidget *parent)
     m_boardView->setTileSize(m_tileSize);
     updateZoomLabel();
 
-    for (int i = 0; i < m_difficulty->count(); ++i) {
+    m_useDoubleClick =
+        settings.value(QStringLiteral("controls/inverseAction"),
+                       QStringLiteral("long")).toString()
+        == QStringLiteral("double");
+    m_boardView->setUsesDoubleClick(m_useDoubleClick);
+
+    for (int i = 0; i < m_difficultyNames.size(); ++i) {
         // Custom boards vary, so they never get a best-time record.
         if (i == kCustomDifficulty)
             continue;
         const QString key = bestTimeKey(i);
         if (!settings.contains(key))
             continue;
-        const int best = settings.value(key).toInt();
-        m_bestTimes.insert(i, best);
-        m_difficulty->setItemData(i, formatTime(best), kBestTimeRole);
+        m_bestTimes.insert(i, settings.value(key).toInt());
     }
 
+    updateNewButton();
     newGame();
 }
 
@@ -1279,8 +1329,8 @@ bool Minesweeper::handleBack()
     if (!m_activeDialog)
         return false;
 
-    // The prompt runs a nested loop; rejecting it lets that loop finish so the
-    // rest of askCustomGame() unwinds normally.
+    // Both in-window prompts run a nested loop; rejecting lets that loop
+    // finish so showSettings() or askCustomGame() unwinds normally.
     m_activeDialog->reject();
     return true;
 }
@@ -1333,7 +1383,21 @@ void Minesweeper::newGame()
     m_gameOver = false;
     m_flagMode->setChecked(false);
 
-    const int index = m_difficulty->currentIndex();
+    // Settings only changes the choice; New is what actually applies it.
+    int index = m_selectedDifficulty;
+    if (index == kCustomDifficulty && !askCustomGame()) {
+        // Cancelling the size prompt keeps the board that was in play.
+        index = m_activeDifficulty == kCustomDifficulty
+                    ? m_previousDifficulty
+                    : m_activeDifficulty;
+        m_selectedDifficulty = index;
+        updateNewButton();
+    }
+
+    m_activeDifficulty = index;
+    if (index != kCustomDifficulty)
+        m_previousDifficulty = index;
+
     if (index == kCustomDifficulty) {
         m_rows = m_customRows;
         m_columns = m_customColumns;
@@ -1415,9 +1479,24 @@ void Minesweeper::onButtonClicked(int index)
 
 void Minesweeper::onCellLongClicked(int index)
 {
+    // With double click selected, holds are deliberately inert.
+    if (m_useDoubleClick)
+        return;
+
     // A long press is the inverted mode: it performs whichever action the
     // short click is currently not set to do.
     handleCellAction(index, !m_flagMode->isChecked(), true);
+}
+
+void Minesweeper::onCellDoubleClicked(int index)
+{
+    // Double click exists only as the "open" action while flagging. In Flag:
+    // off mode it must not change a cell: two quick taps there are still two
+    // ordinary opens, and a flag action would be a dangerous misclick.
+    if (!m_useDoubleClick || !m_flagMode->isChecked())
+        return;
+
+    handleCellAction(index, false, true);
 }
 
 void Minesweeper::handleCellAction(int index, bool flagAction,
@@ -1452,7 +1531,7 @@ void Minesweeper::openCell(int index, bool clearFlag)
 
     if (cell.flagged) {
         // A short click must never open a flagged tile. Only the inverted
-        // (long-press) action is allowed to clear the flag and open it.
+        // gesture (long press or double click) may clear a flag and open it.
         if (!clearFlag)
             return;
         cell.flagged = false;
@@ -1465,6 +1544,9 @@ void Minesweeper::openCell(int index, bool clearFlag)
         placeMines(index);
         m_firstClick = false;
         m_timer->start();
+        // The opening click belongs to Flag: off mode; once the board is safe
+        // to read, flag mode takes over for the rest of the game.
+        m_flagMode->setChecked(true);
     }
 
     reveal(index);
@@ -1619,7 +1701,7 @@ void Minesweeper::finish(bool won)
             }
         }
 
-        const int difficulty = m_difficulty->currentIndex();
+        const int difficulty = m_activeDifficulty;
         if (difficulty == kCustomDifficulty) {
             setStatus(
                 tr("You cleared the field in %1.").arg(formatTime(m_seconds)));
@@ -1631,8 +1713,6 @@ void Minesweeper::finish(bool won)
                 m_bestTimes[difficulty] = m_seconds;
                 QSettings settings;
                 settings.setValue(bestTimeKey(difficulty), m_seconds);
-                m_difficulty->setItemData(difficulty, formatTime(m_seconds),
-                                          kBestTimeRole);
                 setStatus(
                     tr("You cleared the field in %1 - a new best time!")
                         .arg(formatTime(m_seconds)));
@@ -1667,13 +1747,13 @@ void Minesweeper::updateCounters()
     m_minesLeft->setText(tr("Mines: %1").arg(m_mineCount - m_flagCount));
     m_time->setText(tr("Time: %1").arg(formatTime(m_seconds)));
 
-    if (m_difficulty->currentIndex() == kCustomDifficulty) {
+    if (m_activeDifficulty == kCustomDifficulty) {
         // Custom boards differ in size, so a time is not comparable.
         m_bestTime->setText(tr("Best: -"));
         return;
     }
 
-    const auto best = m_bestTimes.constFind(m_difficulty->currentIndex());
+    const auto best = m_bestTimes.constFind(m_activeDifficulty);
     m_bestTime->setText(best == m_bestTimes.cend()
                             ? tr("Best: -")
                             : tr("Best: %1").arg(formatTime(*best)));
@@ -1824,18 +1904,108 @@ void Minesweeper::tick()
     updateCounters();
 }
 
-void Minesweeper::setDifficulty(int index)
+void Minesweeper::showSettings()
 {
-    // A custom game needs its parameters from the user first. Cancelling the
-    // dialog puts the previous difficulty back without starting a new game.
-    if (index == kCustomDifficulty && !askCustomGame()) {
-        const QSignalBlocker blocker(m_difficulty);
-        m_difficulty->setCurrentIndex(m_previousDifficulty);
-        return;
-    }
+    // Keep the dialog inside the game window, like askCustomGame(): a second
+    // top-level surface would disturb Qt's accessibility state on Android.
+    QWidget backdrop(this);
+    backdrop.setObjectName(QStringLiteral("settingsBackdrop"));
+    backdrop.setStyleSheet(
+        QStringLiteral("#settingsBackdrop { background-color: rgba(0, 0, 0, 120); }"));
+    backdrop.setGeometry(rect());
+    backdrop.show();
 
-    m_previousDifficulty = index;
-    newGame();
+    QDialog dialog(&backdrop);
+    dialog.setWindowFlags(Qt::Widget);
+    dialog.setAutoFillBackground(true);
+    dialog.setStyleSheet(QStringLiteral(
+        "QDialog { background-color: palette(window); border: 1px solid palette(mid); }"));
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(14, 14, 14, 12);
+    layout->setSpacing(10);
+
+    auto *title = new QLabel(tr("Settings"), &dialog);
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    layout->addWidget(title);
+
+    auto *form = new QFormLayout;
+    auto *difficulty = new DifficultyComboBox(&dialog);
+    for (int i = 0; i < m_difficultyNames.size(); ++i)
+        difficulty->addItem(m_difficultyNames.at(i), i);
+    difficulty->view()->setItemDelegate(new BestTimeDelegate(difficulty->view()));
+    for (int i = 0; i < difficulty->count(); ++i) {
+        // Custom boards vary, so they never get a best-time record.
+        if (i == kCustomDifficulty)
+            continue;
+        const auto best = m_bestTimes.constFind(i);
+        if (best != m_bestTimes.cend())
+            difficulty->setItemData(i, formatTime(*best), kBestTimeRole);
+    }
+    difficulty->setCurrentIndex(
+        qBound(0, m_selectedDifficulty, difficulty->count() - 1));
+    form->addRow(tr("Difficulty:"), difficulty);
+
+    auto *longClick = new QRadioButton(tr("Long click"), &dialog);
+    auto *doubleClick = new QRadioButton(tr("Double click"), &dialog);
+    (m_useDoubleClick ? doubleClick : longClick)->setChecked(true);
+    auto *gestures = new QVBoxLayout;
+    gestures->addWidget(longClick);
+    gestures->addWidget(doubleClick);
+    auto *hint = new QLabel(
+        tr("While Flag is on, this gesture opens a cell instead of flagging "
+           "it. Double click is ignored while Flag is off."),
+        &dialog);
+    hint->setWordWrap(true);
+    gestures->addWidget(hint);
+    form->addRow(tr("Open a cell:"), gestures);
+    layout->addLayout(form);
+
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    if (QPushButton *ok = buttons->button(QDialogButtonBox::Ok))
+        ok->setDefault(true);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    dialog.adjustSize();
+    dialog.move((backdrop.width() - dialog.width()) / 2,
+                (backdrop.height() - dialog.height()) / 2);
+
+    bool accepted = false;
+    QEventLoop loop;
+    connect(&dialog, &QDialog::accepted, &loop, [&accepted, &loop] {
+        accepted = true;
+        loop.quit();
+    });
+    connect(&dialog, &QDialog::rejected, &loop, &QEventLoop::quit);
+    m_activeDialog = &dialog;
+    dialog.show();
+    dialog.raise();
+    loop.exec();
+    m_activeDialog = nullptr;
+
+    if (!accepted)
+        return;
+
+    // Nothing here starts a game: the board changes only when New is pressed.
+    m_selectedDifficulty = difficulty->currentIndex();
+    m_useDoubleClick = doubleClick->isChecked();
+    QSettings settings;
+    settings.setValue(QStringLiteral("controls/inverseAction"),
+                      m_useDoubleClick ? QStringLiteral("double")
+                                       : QStringLiteral("long"));
+    m_boardView->setUsesDoubleClick(m_useDoubleClick);
+    updateNewButton();
+}
+
+void Minesweeper::updateNewButton()
+{
+    m_newButton->setText(
+        tr("New (%1)").arg(m_difficultyNames.value(m_selectedDifficulty)));
 }
 
 bool Minesweeper::askCustomGame()
